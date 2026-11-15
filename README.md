@@ -18,7 +18,7 @@ npm run example:midi2
 npm run build:site   # GitHub Pages site in _site/
 ```
 
-`npm run build` produces JavaScript and TypeScript declarations in `dist/`. Install directly from GitHub with `npm install git+https://github.com/designerzen/audiobus-protocol.git` (pin a commit for reproducible builds), install a local checkout with `npm install ../audiobus-protocol`, or use a workspace dependency. The `prepare` script builds Git installs automatically. This repository is not yet a published npm release.
+`npm run build` produces JavaScript and TypeScript declarations in `dist/`. Install directly from GitHub with `npm install git+https://github.com/designerzen/audiobus-protocol.git` (pin a commit for reproducible builds), install a local checkout with `npm install ../audiobus-protocol`, or use a workspace dependency. The built `dist/` is committed, so Git installs work even with install scripts disabled (`--ignore-scripts`); run `npm run build` and commit `dist/` with any source change. CI fails if it is out of date. This repository is not yet a published npm release.
 
 ## Expose a command
 
