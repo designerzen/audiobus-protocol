@@ -1,0 +1,51 @@
+<!doctype html>
+<html lang="en">
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>audioBus Protocol — example console</title>
+<style>
+  :root { color-scheme: light dark; }
+  body { font: 17px/1.5 system-ui; max-width: 56rem; margin: 2rem auto; padding: 0 1rem; }
+  pre { white-space: pre-wrap; padding: 1rem; border: 1px solid #8884; border-radius: 8px; overflow-x: auto; }
+  button, select { font: inherit; padding: .4rem .7rem; }
+</style>
+<p><a href="../demos.html">All demos</a></p>
+<h1>Example console</h1>
+<p>Runs a Node example in this page using an in-memory transport. Output that the example prints with <code>console.log</code> appears below.</p>
+<label>Example
+  <select id="example">
+    <option value="peers">Connect, discover, subscribe, set (peers.js)</option>
+    <option value="midi2">MIDI 2 and properties (midi2.js)</option>
+  </select>
+</label>
+<button id="run">Run again</button>
+<h2>Output</h2>
+<pre id="output" role="status"></pre>
+<h2>Source</h2>
+<pre id="source"></pre>
+<script type="module">
+const EXAMPLES = ['peers', 'midi2']
+const EVENT_CLICK = 'click', EVENT_CHANGE = 'change'
+const output = document.querySelector('#output'), source = document.querySelector('#source')
+const select = document.querySelector('#example')
+const requested = new URLSearchParams(location.search).get('example')
+const name = EXAMPLES.includes(requested) ? requested : EXAMPLES[0]
+select.value = name
+const format = (values) => values.map((value) => typeof value === 'string' ? value : JSON.stringify(value, null, 2)).join(' ')
+const log = console.log
+console.log = (...values) => { log(...values); output.textContent += format(values) + '\n' }
+async function run() {
+  output.textContent = ''
+  try {
+    // A fresh module instance each run, so the example executes again.
+    await import(`./${name}.js?run=${Date.now()}`)
+  } catch (error) {
+    output.textContent += `Error: ${error.message}\n`
+  }
+}
+select.addEventListener(EVENT_CHANGE, () => { location.search = `?example=${select.value}` })
+document.querySelector('#run').addEventListener(EVENT_CLICK, run)
+source.textContent = await (await fetch(`./${name}.js`)).text()
+await run()
+</script>
+</html>

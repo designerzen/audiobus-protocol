@@ -1,0 +1,108 @@
+<!doctype html>
+<html lang="en">
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>audioBus Protocol — pairing codes and retained state</title>
+<style>
+  :root { color-scheme: light dark; }
+  body { font: 18px/1.5 system-ui; max-width: 48rem; margin: 2rem auto; padding: 0 1rem; }
+  input, button { font: inherit; padding: .4rem .7rem; }
+  .code { font: 700 2rem ui-monospace, monospace; letter-spacing: .1em; }
+  pre { white-space: pre-wrap; padding: 1rem; border: 1px solid #8884; border-radius: 8px; }
+  [hidden] { display: none; }
+</style>
+<p><a href="../demos.html">All demos</a></p>
+<section id="controller">
+  <h1>Controller</h1>
+  <p>Open the instrument. It was opened by this window rather than choosing its peer, so it requires a pairing code before accepting anything.</p>
+  <button id="open">Open instrument</button>
+  <p><label>Pairing code shown by the instrument <input id="code" autocomplete="off" spellcheck="false" placeholder="ABCD-EFGH"></label>
+  <button id="connect" disabled>Connect</button></p>
+  <p>Instrument tempo: <strong id="remote-bpm">—</strong> BPM <button id="faster" disabled>+10 BPM</button></p>
+</section>
+<section id="instrument" hidden>
+  <h1>Instrument</h1>
+  <p>Enter this code in the controller window:</p>
+  <p class="code" id="shown-code"></p>
+  <p><label>Tempo <input id="tempo" type="range" min="60" max="200" value="120"></label> <output id="local-bpm">120</output> BPM</p>
+</section>
+<p id="state" role="status"></p>
+<pre id="log"></pre>
+<script type="module">
+import { CommandRegistry, Peer, windowTransport, generatePairingCode, formatPairingCode } from '../dist/index.js'
+const EVENT_CLICK = 'click', EVENT_INPUT = 'input', EVENT_MESSAGE = 'message', EVENT_PAGE_HIDE = 'pagehide'
+const READY = 'pairing-demo,ready', TOPIC = 'transport.changed'
+const $ = (selector) => document.querySelector(selector)
+const state = (text) => { $('#state').textContent = text }
+const log = (value) => { $('#log').textContent = `${JSON.stringify(value)}\n${$('#log').textContent}`.slice(0, 4000) }
+let peer
+
+if (window.opener && new URLSearchParams(location.search).get('role') === 'instrument') {
+  // Instrument: the peer chose this window, so require a code the person copies across.
+  $('#controller').hidden = true
+  $('#instrument').hidden = false
+  let bpm = 120
+  const registry = new CommandRegistry()
+  const publish = () => registry.publish(TOPIC, { bpm })
+  registry.register({
+    id: 'transport.setTempo', title: 'Set tempo', description: 'Set BPM',
+    inputSchema: { type: 'object', properties: { bpm: { type: 'number', minimum: 60, maximum: 200 } }, required: ['bpm'], additionalProperties: false },
+    execute: (args) => { bpm = args.bpm; $('#tempo').value = $('#local-bpm').value = bpm; publish(); return { bpm } }
+  })
+  // New subscribers receive the current tempo with their subscription.
+  registry.retain(TOPIC, () => ({ bpm }))
+  const code = generatePairingCode()
+  $('#shown-code').textContent = formatPairingCode(code)
+  peer = new Peer(windowTransport(window.opener, location.origin), {
+    identity: { name: 'Pairing demo instrument', version: '1' },
+    registry,
+    requirePairingCode: code,
+    onAuthorized: () => state('Paired. Move the tempo slider and watch the controller.')
+  })
+  $('#tempo').addEventListener(EVENT_INPUT, () => { bpm = Number($('#tempo').value); $('#local-bpm').value = bpm; publish() })
+  state('Waiting for the controller to present the code.')
+  window.opener.postMessage(READY, location.origin)
+} else {
+  // Controller: it chose the instrument window, and presents the code it is given.
+  let target
+  const show = (data) => { if (data && typeof data.bpm === 'number') $('#remote-bpm').textContent = data.bpm }
+  window.addEventListener(EVENT_MESSAGE, (event) => {
+    if (event.source !== target || event.origin !== location.origin || event.data !== READY) return
+    $('#connect').disabled = false
+    state('Instrument ready. Enter its code and press Connect.')
+  })
+  $('#open').addEventListener(EVENT_CLICK, () => {
+    peer?.close()
+    $('#connect').disabled = $('#faster').disabled = true
+    $('#remote-bpm').textContent = '—'
+    target = window.open(`${location.pathname}?role=instrument`, '_blank', 'popup,width=520,height=560')
+    if (!target) state('Allow popups and try again.')
+  })
+  $('#connect').addEventListener(EVENT_CLICK, async () => {
+    peer?.close()
+    peer = new Peer(windowTransport(target, location.origin), {
+      identity: { name: 'Pairing demo controller', version: '1' },
+      pairingCode: $('#code').value,
+      onEvent: (topic, data) => { log({ topic, data }); if (topic === TOPIC) show(data) }
+    })
+    try {
+      await peer.connect()
+      // State and subscription are captured together; later changes arrive as events.
+      const { retained, state: current } = await peer.subscribeState(TOPIC)
+      log({ subscribed: TOPIC, retained, state: current })
+      show(current)
+      $('#faster').disabled = false
+      state('Connected.')
+    } catch (error) {
+      state(`${error.code ?? 'error'}: ${error.message}`)
+    }
+  })
+  $('#faster').addEventListener(EVENT_CLICK, async () => {
+    const bpm = Math.min(200, Number($('#remote-bpm').textContent) + 10)
+    try { log(await peer.call('transport.setTempo', { bpm })) } catch (error) { state(error.message) }
+  })
+  state('Open the instrument to begin.')
+}
+window.addEventListener(EVENT_PAGE_HIDE, () => peer?.close())
+</script>
+</html>

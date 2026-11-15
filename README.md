@@ -2,6 +2,8 @@
 
 Discover and control music applications over a small, symmetric protocol inspired by [WebMidiLink](https://www.g200kg.com/en/docs/webmidilink/spec.html). Each application can expose commands and call the other application's commands. MIDI retains the original WebMidiLink wire format. This is a new protocol, not an MCP server.
 
+**[Documentation and live demos](https://designerzen.github.io/audiobus-protocol/)**
+
 The package has no runtime dependencies. Application state and command handlers belong to the host; the protocol does not depend on audioBus, Harmoneasy, OpenDAW, React, or a DOM.
 
 ## Develop and run
@@ -13,6 +15,7 @@ npm install
 npm test
 npm run example
 npm run example:midi2
+npm run build:site   # GitHub Pages site in _site/
 ```
 
 `npm run build` produces JavaScript and TypeScript declarations in `dist/`. Install directly from GitHub with `npm install git+https://github.com/designerzen/audiobus-protocol.git` (pin a commit for reproducible builds), install a local checkout with `npm install ../audiobus-protocol`, or use a workspace dependency. The `prepare` script builds Git installs automatically. This repository is not yet a published npm release.
@@ -63,6 +66,8 @@ The receiving peer can call back after the same handshake; it does not need a se
 - [Two in-memory peers](examples/peers.js): runnable connect → discover → read → subscribe → set → notification exchange, representing Harmoneasy and an OpenDAW integration.
 - [MIDI 2 and properties](examples/midi2.js): negotiated UMP, exact high-resolution words, a versioned capability bundle, and property discovery/write/subscription.
 - [Two browser windows](examples/browser.html): build first, then serve this repository with your preferred static HTTP server and open `/examples/browser.html`. It requires HTTP(S), not `file://`. This example uses an explicit readiness message before initialization.
+- [Pairing codes and retained state](examples/pairing.html): a popup that requires a pairing code, and a controller that receives tempo state with its subscription.
+- [Example console](examples/console.html): runs the in-memory examples in a browser and shows their output.
 - [MIDI destination with optional sound](examples/receiver.html): a popup receiver for Harmoneasy's Protocol Output, with explicit origin pairing, tempo commands, panic, MIDI logging, and Level 1 patches.
 - [Wire protocol](docs/protocol.md): framing, lifecycle, methods, errors, and compatibility.
 - [Application integration](docs/integration.md): audioBus Input, Output and command palette patterns.

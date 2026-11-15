@@ -62,7 +62,7 @@ try {
   // Per-note assignable controller, retaining the full unsigned 32-bit value.
   source.sendUmp([0x43113c01, 0xdeadbeef]);
   source.sendUmp([0x43813c00, 0]);
-  await new Promise((resolve) => setImmediate(resolve));
+  await new Promise((resolve) => setTimeout(resolve, 0));
 } finally {
   source.close();
   destination.close();
