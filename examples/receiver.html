@@ -4,14 +4,15 @@
 <title>audioBus Protocol MIDI destination</title>
 <style>body { font: 18px system-ui; max-width: 48rem; margin: 3rem auto; padding: 1rem; } input, button { font: inherit; padding: .5rem; } pre { white-space: pre-wrap; }</style>
 <h1>MIDI and command destination</h1>
-<p>Open this page from Harmoneasy's Protocol Output. Enter the exact origin of the opening application, then accept the connection and press Connect in the Output.</p>
+<p>Open this page from Harmoneasy's Protocol Output. Enter the exact origin of the opening application and accept it. Enter the pairing code shown here in the Output, then press Connect there.</p>
 <label>Opening application origin <input id="origin" type="url" placeholder="http://localhost:1999"></label>
 <button id="accept">Accept opening application</button>
 <button id="audio">Enable sound</button>
 <p id="state" role="status">Not paired</p>
+<p>Pairing code: <strong id="code">—</strong></p>
 <pre id="log"></pre>
 <script type="module">
-import { Peer, CommandRegistry, EMPTY_SCHEMA, windowTransport } from '../dist/index.js'
+import { Peer, CommandRegistry, EMPTY_SCHEMA, windowTransport, generatePairingCode, formatPairingCode } from '../dist/index.js'
 const EVENT_CLICK = 'click', EVENT_PAGE_HIDE = 'pagehide'
 const commands = new CommandRegistry(), voices = new Map(), sustain = new Set()
 let peer, context, bpm = 120
@@ -56,6 +57,7 @@ commands.registerProperty({ id: 'transport.tempo', title: 'Tempo', description: 
   schema: { type: 'number', minimum: 10, maximum: 303 }, get: () => bpm,
   set: async value => { await commands.call('transport.setTempo', { bpm: value }) }
 })
+commands.retain('transport.changed', () => ({ bpm }))
 commands.registerBundle({ id: 'org.audiobus.demo-receiver', version: 1,
   commands: ['transport.get', 'transport.setTempo', 'app.panic'], properties: ['transport.tempo'] })
 function ump(words) {
@@ -81,8 +83,13 @@ document.querySelector('#accept').addEventListener(EVENT_CLICK, () => {
     // Validate before replacing a working peer. Never infer or accept an arbitrary sender.
     const transport = windowTransport(window.opener, origin)
     peer?.close(); panic()
+    // The opener chose this window, not us: require a code shown here before accepting anything.
+    const code = generatePairingCode()
+    document.querySelector('#code').textContent = formatPairingCode(code)
     peer = new Peer(transport, {
       identity: { name: 'Protocol receiver example', version: '1' }, registry: commands, onMidi: midi, ump: true, onUmp: ump,
+      requirePairingCode: code,
+      onAuthorized: () => { document.querySelector('#state').textContent = 'Connected. Enable sound here to hear MIDI.' },
       getPatch: () => encodeURIComponent(JSON.stringify({ bpm })),
       setPatch: patch => {
         const value = JSON.parse(decodeURIComponent(patch))
@@ -90,7 +97,7 @@ document.querySelector('#accept').addEventListener(EVENT_CLICK, () => {
       }
     })
     peer.announceReady()
-    document.querySelector('#state').textContent = 'Paired. Press Connect in the Output; enable sound here to hear MIDI.'
+    document.querySelector('#state').textContent = 'Accepted. Enter the pairing code in the Output, then press Connect there.'
   } catch (error) { log(error.message) }
 })
 window.addEventListener(EVENT_PAGE_HIDE, () => { panic(); peer?.close(); void context?.close() })

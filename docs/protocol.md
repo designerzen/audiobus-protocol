@@ -25,6 +25,12 @@ Install listeners on both sides, then call `connect()` on either side after appl
 
 No automatic window discovery or acceptance of arbitrary senders takes place. The host explicitly provides the remote window and trusted origin. A reload creates a new application session: close the old peer, release its input notes, create a new peer and initialize again. Close rejects outstanding local requests and removes local listeners and subscriptions. Close has no wire acknowledgement and cannot cancel a command already executing remotely. Remote disappearance is detected through request timeouts or application lifecycle signals, not heartbeats.
 
+### Pairing codes (SDK 0.3)
+
+A window transport proves which window and origin sent a message, not that a person intended the connection. When a peer's window was not chosen by its own application, such as `window.opener` or an embedding parent, show a code generated with `generatePairingCode()` and construct the Peer with `requirePairingCode`. The other application's person enters it, and that Peer passes it as `pairingCode`. `initialize` then carries `pairingCode`; comparison ignores case, spaces and dashes.
+
+Until a matching code arrives, the requiring peer ignores `midi`, `ump` and `link` messages and rejects every request except `initialize` with `unauthorized`. This holds even after the requiring peer has initialized the other side itself, so a peer cannot gain access by waiting to be initialized. After `MAX_PAIRING_ATTEMPTS` (5) failed initializations, retried copies included, the peer rejects all codes until it is replaced; generate a new code when pairing again. Inbound events are also ignored until then. `peer.isAuthorized` and `onAuthorized` report acceptance. Legacy WebMidiLink senders never initialize, so they cannot present a code. Codes are short-lived proof of a person's intent, not a secret for an untrusted transport: they travel inside the authorized window channel.
+
 ## Methods
 
 | Method | Arguments | Result |
@@ -32,14 +38,14 @@ No automatic window discovery or acceptance of arbitrary senders takes place. Th
 | `initialize` | `protocolVersion`, `name`, `version` | negotiated version, identity, capabilities, limit |
 | `commands.list` | `{}` | command descriptors |
 | `commands.call` | `command`, `arguments` | command result |
-| `events.subscribe` | `topic` | `{topic, subscribed:true}` |
+| `events.subscribe` | `topic` | `{topic, subscribed:true}`, plus `state` for retained topics |
 | `events.unsubscribe` | `topic` | `{topic, subscribed:false}` |
 
 Descriptors contain `id`, `title`, `description`, `inputSchema`, and current `available`. Availability is checked again at execution. The input schema supports object properties of type string, boolean, finite number, or integer; optional enum, numeric minimum/maximum, required properties, and `additionalProperties:false`. This is a bounded JSON Schema subset, not a complete JSON Schema validator. Nested objects and arrays as command arguments are reserved for a later version. Results and events may contain arbitrary JSON trees.
 
-Topics are exact strings of 1–200 characters, with at most 128 subscriptions per connection. Repeated subscriptions are idempotent; there is no wildcard or retained initial value. Subscribe then read current state when establishing a view. State events can arrive before the response to the call that triggered them. `commands.changed` is published when commands are registered or removed; hosts should publish it when dynamic availability changes. Subscribe/list again to refresh discovery.
+Topics are exact strings of 1–200 characters, with at most 128 subscriptions per connection. Repeated subscriptions are idempotent; there are no wildcards. Hosts may retain a topic with `registry.retain(topic, read)`; the subscribe result then includes `state`, read synchronously and sent in the same task as the subscription is recorded. Every later change arrives as an event after that response, so clients apply the state and then events in arrival order. `peer.subscribeState(topic)` returns `{retained, state}`. A subscription whose state would exceed the message limit is rejected with `message_too_large` and not recorded. Peers advertise this with the `retained` capability; for topics without a retained reader, subscribe then read current state. State events can arrive before the response to the call that triggered them. `commands.changed` is published when commands are registered or removed; hosts should publish it when dynamic availability changes. Subscribe/list again to refresh discovery.
 
-Error codes: `invalid_params`, `invalid_result`, `unknown_method`, `unknown_command`, `unavailable`, `unsupported_version`, `not_initialized`, `limit_exceeded`, `message_too_large`, `internal_error`; SDK-local errors also include `timeout`, `closed`, and `invalid_midi`. The default request timeout is 5 seconds; configure `timeoutMs` per peer. Initialization requests repeat every 250 ms with the same ID until a response or timeout; initialization is idempotent. No other requests are retried. Timeouts do not imply rollback.
+Error codes: `invalid_params`, `invalid_result`, `unknown_method`, `unknown_command`, `unavailable`, `unsupported_version`, `not_initialized`, `limit_exceeded`, `message_too_large`, `internal_error`; `unauthorized` (pairing code missing, incorrect or locked out); SDK-local errors also include `timeout`, `closed`, and `invalid_midi`. The default request timeout is 5 seconds; configure `timeoutMs` per peer. Initialization requests repeat every 250 ms with the same ID until a response or timeout; initialization is idempotent. No other requests are retried. Timeouts do not imply rollback.
 
 ## Optional MIDI 2 and property extensions (SDK 0.2)
 
@@ -64,7 +70,7 @@ Additional SDK error codes are `unsupported_capability` and `invalid_ump`.
 
 ## WebMidiLink compatibility
 
-MIDI uses unmodified `midi,<hex-byte>,…`, one full message per postMessage, with no running status. MIDI may arrive before control initialization so existing Level 0 senders still work. Notes, controllers, system common/realtime, and complete SysEx are decoded; invalid byte ranges, message lengths, and concatenated messages are rejected. Receiving applications decide whether to allow SysEx and which messages to route. Message arrival time is used; version 1 adds no MIDI timestamp.
+MIDI uses unmodified `midi,<hex-byte>,…`, one full message per postMessage, with no running status. MIDI may arrive before control initialization so existing Level 0 senders still work, unless the receiving Peer requires a pairing code. Notes, controllers, system common/realtime, and complete SysEx are decoded; invalid byte ranges, message lengths, and concatenated messages are rejected. Receiving applications decide whether to allow SysEx and which messages to route. Message arrival time is used; version 1 adds no MIDI timestamp.
 
 Optional `getPatch`, `setPatch`, and `onPatch` hooks receive `link,reqpatch`, `link,setpatch,<data>`, and `link,patch,<data>`. Patch data must be a comma-free string; encode application JSON using percent encoding or base64url. Hosts providing Level 1 functionality send `link,ready` themselves when ready. `link` semantics remain patch exchange, not application command discovery. The SDK does not require a control handshake for legacy patch messages; the transport must already authorize their sender.
 

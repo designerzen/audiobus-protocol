@@ -67,9 +67,11 @@ The receiving peer can call back after the same handshake; it does not need a se
 - [Wire protocol](docs/protocol.md): framing, lifecycle, methods, errors, and compatibility.
 - [Application integration](docs/integration.md): audioBus Input, Output and command palette patterns.
 
-Only explicitly paired peers should receive a transport. `windowTransport` requires an exact origin and checks both `event.source` and `event.origin`; it never accepts a wildcard. Origin validation establishes which application is connected, not which commands it should be allowed to execute: expose a registry appropriate to that connection. Commands requiring a browser user gesture may still require local interaction.
+Only explicitly paired peers should receive a transport. `windowTransport` requires an exact origin and checks both `event.source` and `event.origin`; it never accepts a wildcard. Origin validation establishes which application is connected, not which commands it should be allowed to execute: expose a registry appropriate to that connection. When the peer window was not chosen by your application, such as `window.opener`, require a pairing code shown to the person (`generatePairingCode()`, `requirePairingCode`, `pairingCode`); see [pairing codes](docs/protocol.md#pairing-codes-sdk-03). Commands requiring a browser user gesture may still require local interaction.
 
 ## Initial scope
+
+Package 0.3 adds pairing codes for peers whose window was not chosen by the application, and retained topic state: `registry.retain(topic, read)` lets `peer.subscribeState(topic)` receive current state atomically with the subscription. Wire protocol version 1 is unchanged and older peers interoperate unless a pairing code is required.
 
 Package 0.2 adds negotiated UMP, discoverable scalar properties and application-defined capability bundles while retaining wire protocol version 1 and older peers. Opt in with `ump:true` on both Peers and provide `onUmp` at receiving endpoints. `sendUmp()` sends one packet as unsigned 32-bit words, preserving MIDI 2 precision; it rejects unless both peers advertised UMP. Byte MIDI remains unchanged. No implicit MIDI 1 conversion takes place in the SDK.
 

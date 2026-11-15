@@ -7,9 +7,13 @@ import {
   decodeMidi,
   windowTransport,
   parseCommandDescriptors,
+  generatePairingCode,
+  formatPairingCode,
+  normalizePairingCode,
+  MAX_PAIRING_ATTEMPTS,
 } from "../dist/index.js";
 
-function pair(options = {}) {
+function pair(options = {}, remote = {}) {
   const listeners = [new Set(), new Set()];
   const transports = [0, 1].map((i) => ({
     send: (message) => {
@@ -24,7 +28,10 @@ function pair(options = {}) {
     identity: { name: "Harmoneasy", version: "test" },
     ...options,
   });
-  const b = new Peer(transports[1], { identity: { name: "OpenDAW example", version: "test" } });
+  const b = new Peer(transports[1], {
+    identity: { name: "OpenDAW example", version: "test" },
+    ...remote,
+  });
   return {
     a,
     b,
@@ -307,6 +314,219 @@ test("Level 1 sender helpers validate patches and signal readiness", async () =>
     assert.deepEqual(received, ["ready", "valid-patch"]);
     p.b.close();
     assert.throws(() => p.b.requestPatch(), { code: "closed" });
+  } finally {
+    p.close();
+  }
+});
+
+test("pairing codes are random, unambiguous and compared without case or separators", () => {
+  const code = generatePairingCode();
+  assert.match(code, /^[A-HJ-NP-Z2-9]{8}$/);
+  assert.notEqual(generatePairingCode(), code);
+  assert.equal(formatPairingCode("abcd2345"), "ABCD-2345");
+  assert.equal(normalizePairingCode(" ab-cd 23 45 "), "ABCD2345");
+  assert.throws(
+    () => new Peer({ send() {}, listen: () => () => {} }, { identity: { name: "x", version: "1" }, requirePairingCode: "--" }),
+    /letters or digits/,
+  );
+});
+test("a peer requiring a pairing code ignores everything but a matching initialize", async () => {
+  const received = [],
+    authorized = [];
+  const p = pair(
+    {},
+    {
+      requirePairingCode: "ABCD-2345",
+      onMidi: (bytes) => received.push([...bytes]),
+      getPatch: () => "secret",
+      onAuthorized: () => authorized.push(true),
+    },
+  );
+  p.b.registry.register({
+    id: "app.name",
+    title: "Name",
+    description: "",
+    inputSchema: EMPTY_SCHEMA,
+    execute: () => "B",
+  });
+  const patches = [];
+  try {
+    await assert.rejects(p.a.connect(), { code: "unauthorized" });
+    p.transports[0].send("midi,90,3c,64");
+    p.transports[0].send("link,reqpatch");
+    await new Promise((resolve) => setTimeout(resolve, 5));
+    assert.deepEqual(received, []);
+    assert.equal(p.b.isAuthorized, false);
+    // A requiring peer may initialize the other side first; inbound requests stay blocked.
+    await p.b.connect();
+    await assert.rejects(p.a.call("app.name"), { code: "unauthorized" });
+    p.a.close();
+    const a = new Peer(p.transports[0], {
+      identity: { name: "Harmoneasy", version: "test" },
+      pairingCode: "abcd 2345",
+      onPatch: (patch) => patches.push(patch),
+    });
+    try {
+      await a.connect();
+      assert.equal(p.b.isAuthorized, true);
+      assert.deepEqual(authorized, [true]);
+      assert.equal(await a.call("app.name"), "B");
+      a.sendMidi([0x90, 60, 100]);
+      a.requestPatch();
+      await new Promise((resolve) => setTimeout(resolve, 5));
+      assert.deepEqual(received, [[0x90, 60, 100]]);
+      assert.deepEqual(patches, ["secret"]);
+      await a.connect();
+      assert.deepEqual(authorized, [true]);
+    } finally {
+      a.close();
+    }
+  } finally {
+    p.close();
+  }
+});
+test("repeated incorrect pairing codes lock the peer until it is replaced", async () => {
+  const p = pair({}, { requirePairingCode: "ABCD2345" });
+  const peers = [];
+  const attempt = (pairingCode) => {
+    const peer = new Peer(p.transports[0], {
+      identity: { name: "Guess", version: "1" },
+      pairingCode,
+    });
+    peers.push(peer);
+    return peer.connect().finally(() => peer.close());
+  };
+  try {
+    p.a.close();
+    for (let i = 0; i < MAX_PAIRING_ATTEMPTS; i++) {
+      await assert.rejects(attempt(`WRONG${i}`), { message: "Incorrect or missing pairing code" });
+    }
+    await assert.rejects(attempt("ABCD2345"), { message: /Too many incorrect pairing codes/ });
+    assert.equal(p.b.isAuthorized, false);
+  } finally {
+    peers.forEach((peer) => peer.close());
+    p.close();
+  }
+});
+test("subscriptions return retained state captured with the subscription", async () => {
+  const events = [],
+    p = pair({ onEvent: (topic, data) => events.push([topic, data]) });
+  let bpm = 120;
+  const release = p.b.registry.retain("transport.changed", () => ({ bpm }));
+  assert.throws(() => p.b.registry.retain("transport.changed", () => null), /Duplicate/);
+  p.b.registry.retain("broken.state", () => {
+    throw Error("secret");
+  });
+  p.b.registry.retain("async.state", async () => 1);
+  try {
+    await p.a.connect();
+    assert.equal(p.a.supports("retained"), true);
+    assert.deepEqual(await p.a.subscribeState("transport.changed"), {
+      retained: true,
+      state: { bpm: 120 },
+    });
+    assert.deepEqual(await p.a.subscribe("transport.changed"), {
+      topic: "transport.changed",
+      subscribed: true,
+      state: { bpm: 120 },
+    });
+    bpm = 128;
+    p.b.registry.publish("transport.changed", { bpm });
+    await new Promise((resolve) => setTimeout(resolve, 5));
+    assert.deepEqual(events, [["transport.changed", { bpm: 128 }]]);
+    assert.deepEqual(await p.a.subscribeState("other.topic"), { retained: false });
+    await assert.rejects(p.a.subscribe("broken.state"), { code: "internal_error" });
+    await assert.rejects(p.a.subscribe("async.state"), { code: "invalid_result" });
+    p.b.registry.publish("broken.state", 1);
+    p.b.registry.publish("async.state", 1);
+    await new Promise((resolve) => setTimeout(resolve, 5));
+    assert.equal(events.length, 1);
+    release();
+    assert.deepEqual(await p.a.subscribeState("transport.changed"), { retained: false });
+  } finally {
+    p.close();
+  }
+});
+
+test("retained state is replied before any event published while it is captured", async () => {
+  const frames = [],
+    p = pair();
+  p.transports[0].listen((message) => frames.push(message));
+  let bpm = 1;
+  p.b.registry.retain("transport.changed", () => {
+    // A change scheduled during capture must reach the client after the state reply.
+    queueMicrotask(() => {
+      bpm = 2;
+      p.b.registry.publish("transport.changed", { bpm });
+    });
+    return { bpm };
+  });
+  try {
+    await p.a.connect();
+    assert.deepEqual(await p.a.subscribeState("transport.changed"), {
+      retained: true,
+      state: { bpm: 1 },
+    });
+    await new Promise((resolve) => setTimeout(resolve, 5));
+    const reply = frames.findIndex((frame) => frame.includes("%22state%22"));
+    const event = frames.findIndex((frame) => frame.startsWith("control,event,"));
+    assert.ok(reply >= 0 && event > reply, "state reply precedes the later event");
+  } finally {
+    p.close();
+  }
+});
+test("oversized retained state rejects the subscription without recording it", async () => {
+  const events = [],
+    p = pair({ onEvent: (topic, data) => events.push([topic, data]) });
+  p.b.registry.retain("large", () => "x".repeat(300000));
+  try {
+    await p.a.connect();
+    await assert.rejects(p.a.subscribe("large"), { code: "message_too_large" });
+    p.b.registry.publish("large", 1);
+    await new Promise((resolve) => setTimeout(resolve, 5));
+    assert.deepEqual(events, []);
+  } finally {
+    p.close();
+  }
+});
+test("an unauthorized peer receives no events and gets unauthorized before initialization", async () => {
+  const events = [],
+    replies = [];
+  const p = pair(
+    {},
+    {
+      requirePairingCode: "ABCD2345",
+      onEvent: (topic, data) => events.push([topic, data]),
+      onAuthorized: () => {
+        throw Error("application bug");
+      },
+    },
+  );
+  p.transports[0].listen((message) => replies.push(message));
+  try {
+    p.transports[0].send(
+      `control,request,${encodeURIComponent(JSON.stringify({ id: "x", method: "commands.list", params: {} }))}`,
+    );
+    await new Promise((resolve) => setTimeout(resolve, 5));
+    assert.ok(replies.some((frame) => decodeURIComponent(frame).includes('"code":"unauthorized"')));
+    // b initializes a and subscribes there; a's events must not reach b before pairing.
+    await p.b.connect();
+    await p.b.subscribe("transport.changed");
+    p.a.registry.publish("transport.changed", { bpm: 1 });
+    await new Promise((resolve) => setTimeout(resolve, 5));
+    assert.deepEqual(events, []);
+    p.a.close();
+    const a = new Peer(p.transports[0], {
+      identity: { name: "Harmoneasy", version: "test" },
+      pairingCode: "ABCD2345",
+    });
+    try {
+      // A throwing onAuthorized callback must not fail the accepted handshake.
+      await a.connect();
+      assert.equal(p.b.isAuthorized, true);
+    } finally {
+      a.close();
+    }
   } finally {
     p.close();
   }

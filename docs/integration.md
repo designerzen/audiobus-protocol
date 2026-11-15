@@ -4,7 +4,7 @@
 
 Keep handlers in application services. A command palette reads descriptors and calls `registry.call(id, args)`; remote peers invoke the same registry. Do not expose arbitrary DOM selectors or JavaScript evaluation. Use explicit setters such as `transport.setTempo` rather than toggles when remote callers need predictable results. Stable IDs are independent of translated labels, and command schemas document units and ranges.
 
-Suggested application conventions (not mandatory protocol methods): `transport.get`, `transport.start`, `transport.stop`, `transport.setTempo`, `app.panic`, `graph.list`, `graph.addDevice`, `graph.removeDevice`, `graph.connect`, `device.getParameters`, `device.setParameter`, `preset.list`, and `preset.load`. Discover commands before using them: applications may expose different subsets. Publish `transport.changed` for tempo or playback changes, and `commands.changed` if availability changes.
+Suggested application conventions (not mandatory protocol methods): `transport.get`, `transport.start`, `transport.stop`, `transport.setTempo`, `app.panic`, `graph.list`, `graph.addDevice`, `graph.removeDevice`, `graph.connect`, `device.getParameters`, `device.setParameter`, `preset.list`, and `preset.load`. Discover commands before using them: applications may expose different subsets. Publish `transport.changed` for tempo or playback changes, and `commands.changed` if availability changes. Retain state topics with `registry.retain('transport.changed', () => application.transport())` so clients can call `peer.subscribeState('transport.changed')` instead of subscribing and reading separately.
 
 ## audioBus
 

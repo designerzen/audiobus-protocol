@@ -228,6 +228,7 @@ export class CommandRegistry {
   private properties = new Map<string, Property>();
   private bundles = new Map<string, CapabilityBundle>();
   private listeners = new Set<(topic: string, data: Json) => void>();
+  private retained = new Map<string, () => Json>();
   register(command: Command): () => void {
     if (!command.id || this.commands.has(command.id))
       throw new Error(`Duplicate or empty command: ${command.id}`);
@@ -364,6 +365,29 @@ export class CommandRegistry {
           bundle.properties.every((id) => this.properties.has(id)),
       )
       .map((bundle) => structuredClone(bundle));
+  }
+  /**
+   * Provide the current state of a topic to new subscribers. The reader must be synchronous so the
+   * state is captured atomically with the subscription; later changes arrive as published events.
+   */
+  retain(topic: string, read: () => Json): () => void {
+    if (!topic || this.retained.has(topic))
+      throw new Error(`Duplicate or empty retained topic: ${topic}`);
+    this.retained.set(topic, read);
+    return () => {
+      if (this.retained.get(topic) === read) this.retained.delete(topic);
+    };
+  }
+  readRetained(topic: string): { value: Json } | undefined {
+    const read = this.retained.get(topic);
+    if (!read) return;
+    const value: unknown = read();
+    if (value instanceof Promise) {
+      value.catch(() => {});
+      throw new ProtocolError("invalid_result", "Retained state must be read synchronously");
+    }
+    assertJson(value);
+    return { value };
   }
   publish(topic: string, data: Json): void {
     assertJson(data);

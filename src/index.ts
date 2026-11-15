@@ -21,6 +21,29 @@ export * from "./ump.js";
 export const PROTOCOL_VERSION = 1;
 export const CONTROL_PREFIX = "control,";
 export const MAX_MESSAGE_LENGTH = 262144;
+/** Failed initializations, including retried copies, before a peer stops accepting codes. */
+export const MAX_PAIRING_ATTEMPTS = 5;
+// 32 symbols without I, O, 0 or 1, so each random byte maps without bias.
+const PAIRING_ALPHABET = "ABCDEFGHJKLMNPQRSTUVWXYZ23456789";
+
+/** A random code for a person to copy from one application into the other. */
+export function generatePairingCode(length = 8): string {
+  const bytes = crypto.getRandomValues(new Uint8Array(length));
+  return Array.from(bytes, (byte) => PAIRING_ALPHABET[byte & 31]).join("");
+}
+/** Case- and separator-insensitive comparison form. */
+export function normalizePairingCode(code: string): string {
+  return code.toUpperCase().replace(/[^A-Z0-9]/g, "");
+}
+/** Groups of four for display, for example `ABCD-EFGH`. */
+export function formatPairingCode(code: string): string {
+  return normalizePairingCode(code).match(/.{1,4}/g)?.join("-") ?? "";
+}
+function sameCode(a: string, b: string): boolean {
+  let difference = a.length ^ b.length;
+  for (let i = 0; i < b.length; i++) difference |= a.charCodeAt(i) ^ b.charCodeAt(i);
+  return difference === 0;
+}
 export interface Identity {
   name: string;
   version: string;
@@ -44,6 +67,21 @@ export interface PeerOptions {
   /** Explicit opt-in to UMP transport; both peers must advertise it. */
   ump?: boolean;
   onUmp?: (words: number[]) => void;
+  /** Code presented to the remote peer when this peer initializes it. */
+  pairingCode?: string;
+  /**
+   * Code the remote peer must present before this peer handles its requests, MIDI or patches.
+   * Use it when the peer window was not chosen by this application, such as `window.opener`.
+   */
+  requirePairingCode?: string;
+  /** Called once the remote peer has presented the required pairing code. */
+  onAuthorized?: () => void;
+}
+export interface SubscriptionState {
+  /** True when the remote provides retained state for the topic. */
+  retained: boolean;
+  /** State captured atomically with the subscription; later changes arrive as events. */
+  state?: Json;
 }
 
 /** One full MIDI message; no running status, concatenated messages, or invalid data bytes. */
@@ -89,6 +127,9 @@ export class Peer {
   private initialized = false;
   private remoteCapabilities = new Set<string>();
   private closed = false;
+  private authorized: boolean;
+  private requiredCode?: string;
+  private failedPairings = 0;
   private unlisten: () => void;
   private unobserve: () => void;
   constructor(
@@ -96,6 +137,11 @@ export class Peer {
     private options: PeerOptions,
   ) {
     this.registry = options.registry ?? new CommandRegistry();
+    if (options.requirePairingCode !== undefined) {
+      this.requiredCode = normalizePairingCode(options.requirePairingCode);
+      if (!this.requiredCode) throw new Error("A pairing code must contain letters or digits");
+    }
+    this.authorized = this.requiredCode === undefined;
     this.unlisten = transport.listen((message) => {
       void this.receive(message);
     });
@@ -118,8 +164,13 @@ export class Peer {
       "webmidilink",
       "properties",
       "bundles",
+      "retained",
       ...(this.options.ump ? ["ump"] : []),
     ];
+  }
+  /** False until the remote presents the required pairing code; always true without one. */
+  get isAuthorized(): boolean {
+    return this.authorized;
   }
   supports(capability: string): boolean {
     return (
@@ -155,6 +206,9 @@ export class Peer {
       protocolVersion: PROTOCOL_VERSION,
       ...this.options.identity,
       capabilities: this.capabilities,
+      ...(this.options.pairingCode === undefined
+        ? {}
+        : { pairingCode: normalizePairingCode(this.options.pairingCode) }),
     });
     if (!object(result) || result.protocolVersion !== PROTOCOL_VERSION) {
       throw new ProtocolError("unsupported_version", "Peer did not negotiate protocol version 1");
@@ -248,6 +302,13 @@ export class Peer {
   subscribe(topic: string): Promise<Json> {
     return this.request("events.subscribe", { topic });
   }
+  /** Subscribe and receive the topic's current state in the same response, when retained. */
+  async subscribeState(topic: string): Promise<SubscriptionState> {
+    const result = await this.subscribe(topic);
+    return object(result) && Object.hasOwn(result, "state")
+      ? { retained: true, state: result.state as Json }
+      : { retained: false };
+  }
   unsubscribe(topic: string): Promise<Json> {
     return this.request("events.unsubscribe", { topic });
   }
@@ -263,6 +324,9 @@ export class Peer {
   }
   private async receive(message: unknown): Promise<void> {
     if (this.closed || typeof message !== "string" || message.length > MAX_MESSAGE_LENGTH) return;
+    // Until the remote proves the pairing code, only control envelopes are processed; requests
+    // other than initialize are rejected in handle().
+    if (!this.authorized && !message.startsWith(CONTROL_PREFIX)) return;
     try {
       if (message.startsWith("ump,")) {
         if (!this.supports("ump")) return;
@@ -322,6 +386,7 @@ export class Peer {
       } else if (
         kind === "event" &&
         this.initialized &&
+        this.authorized &&
         typeof body.topic === "string" &&
         Object.hasOwn(body, "data")
       ) {
@@ -331,33 +396,84 @@ export class Peer {
         typeof body.id === "string" &&
         typeof body.method === "string"
       ) {
-        try {
-          const result = await this.handle(body.method, body.params);
-          if (!this.closed) this.send("response", { id: body.id, result });
-        } catch (error) {
+        const id = body.id;
+        const fail = (error: unknown) => {
           if (!this.closed)
             this.send("response", {
-              id: body.id,
+              id,
               error: {
                 code: error instanceof ProtocolError ? error.code : "internal_error",
                 message: error instanceof ProtocolError ? error.message : "Command failed",
               },
             });
+        };
+        const reply = (result: Json) => {
+          try {
+            if (!this.closed) this.send("response", { id, result });
+          } catch (error) {
+            fail(error);
+          }
+        };
+        let result: Json | Promise<Json>;
+        try {
+          result = this.handle(body.method, body.params, id);
+        } catch (error) {
+          fail(error);
+          return;
         }
+        // Synchronous results, such as subscriptions with retained state, are sent in the same
+        // task, so no event can be sent between capturing state and replying with it.
+        if (!(result instanceof Promise)) {
+          reply(result);
+          return;
+        }
+        try {
+          result = await result;
+        } catch (error) {
+          fail(error);
+          return;
+        }
+        reply(result);
       }
     } catch {
       /* Ignore malformed envelopes and isolate transport/application callbacks. */
     }
   }
-  private async handle(method: string, params: unknown): Promise<Json> {
+  private checkPairing(code: unknown): void {
+    if (this.requiredCode === undefined) return;
+    if (this.failedPairings >= MAX_PAIRING_ATTEMPTS)
+      throw new ProtocolError("unauthorized", "Too many incorrect pairing codes; pair again");
+    if (
+      typeof code !== "string" ||
+      code.length > 64 ||
+      !sameCode(normalizePairingCode(code), this.requiredCode)
+    ) {
+      this.failedPairings++;
+      throw new ProtocolError("unauthorized", "Incorrect or missing pairing code");
+    }
+  }
+  private fits(id: string, result: Json): boolean {
+    const body = encodeURIComponent(JSON.stringify({ id, result }));
+    return `${CONTROL_PREFIX}response,${body}`.length <= MAX_MESSAGE_LENGTH;
+  }
+  private handle(method: string, params: unknown, id = ""): Json | Promise<Json> {
     if (!object(params)) throw new ProtocolError("invalid_params", "Expected an argument object");
     if (method === "initialize") {
       if (params.protocolVersion !== PROTOCOL_VERSION)
         throw new ProtocolError("unsupported_version", "Expected protocol version 1");
       if (typeof params.name !== "string" || typeof params.version !== "string")
         throw new ProtocolError("invalid_params", "Expected peer identity");
+      this.checkPairing(params.pairingCode);
       this.acceptCapabilities(params.capabilities);
       this.initialized = true;
+      if (!this.authorized) {
+        this.authorized = true;
+        try {
+          this.options.onAuthorized?.();
+        } catch {
+          /* Application callbacks cannot fail an accepted handshake. */
+        }
+      }
       return {
         ...this.options.identity,
         protocolVersion: PROTOCOL_VERSION,
@@ -365,6 +481,8 @@ export class Peer {
         maxMessageLength: MAX_MESSAGE_LENGTH,
       };
     }
+    if (!this.authorized)
+      throw new ProtocolError("unauthorized", "Present the pairing code when initializing");
     if (!this.initialized) throw new ProtocolError("not_initialized", "Initialize first");
     switch (method) {
       case "properties.list":
@@ -393,12 +511,29 @@ export class Peer {
       case "events.unsubscribe":
         if (typeof params.topic !== "string" || !params.topic.length || params.topic.length > 200)
           throw new ProtocolError("invalid_params", "Expected a topic of 1–200 characters");
-        if (method === "events.subscribe") {
-          if (this.topics.size >= 128 && !this.topics.has(params.topic))
-            throw new ProtocolError("limit_exceeded", "Too many subscriptions");
-          this.topics.add(params.topic);
-        } else this.topics.delete(params.topic);
-        return { topic: params.topic, subscribed: method === "events.subscribe" };
+        if (method === "events.unsubscribe") {
+          this.topics.delete(params.topic);
+          return { topic: params.topic, subscribed: false };
+        }
+        if (this.topics.size >= 128 && !this.topics.has(params.topic))
+          throw new ProtocolError("limit_exceeded", "Too many subscriptions");
+        {
+          const topic = params.topic,
+            added = !this.topics.has(topic);
+          this.topics.add(topic);
+          try {
+            const retained = this.registry.readRetained(topic);
+            const result: Json = retained
+              ? { topic, subscribed: true, state: retained.value }
+              : { topic, subscribed: true };
+            if (!this.fits(id, result))
+              throw new ProtocolError("message_too_large", "Retained state exceeds message limit");
+            return result;
+          } catch (error) {
+            if (added) this.topics.delete(topic);
+            throw error;
+          }
+        }
       default:
         throw new ProtocolError("unknown_method", `Unknown method: ${method}`);
     }
