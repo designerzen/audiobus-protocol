@@ -1,5 +1,10 @@
 export type Json = null | boolean | number | string | Json[] | { [key: string]: Json };
 export type Params = Record<string, Json>;
+export const TOPIC_COMMANDS_CHANGED = "commands.changed";
+export const TOPIC_PROPERTIES_CHANGED = "properties.changed";
+export const TOPIC_PROPERTIES_LIST_CHANGED = "properties.listChanged";
+export const TOPIC_BUNDLES_CHANGED = "bundles.changed";
+export const TOPIC_TRANSPORT_CHANGED = "transport.changed";
 export interface Parameter {
   type: "string" | "number" | "integer" | "boolean";
   description?: string;
@@ -24,6 +29,28 @@ export interface CommandDescriptor {
 export interface Command extends Omit<CommandDescriptor, "available"> {
   available?: () => boolean;
   execute: (params: Params) => Json | Promise<Json>;
+}
+export interface PropertyDescriptor {
+  id: string;
+  title: string;
+  description: string;
+  schema: Parameter;
+  unit?: string;
+  readOnly: boolean;
+  available: boolean;
+}
+export interface Property extends Omit<PropertyDescriptor, "available" | "readOnly"> {
+  get: () => Json | Promise<Json>;
+  set?: (value: Json) => void | Promise<void>;
+  writable?: () => boolean;
+  available?: () => boolean;
+}
+/** Application-defined contracts, not MIDI-CI Profiles. */
+export interface CapabilityBundle {
+  id: string;
+  version: number;
+  commands: string[];
+  properties: string[];
 }
 export class ProtocolError extends Error {
   constructor(
@@ -151,18 +178,67 @@ export function validate(schema: InputSchema, value: unknown): asserts value is 
     }
   }
 }
+export function parsePropertyDescriptors(value: unknown): PropertyDescriptor[] {
+  if (!Array.isArray(value))
+    throw new ProtocolError("invalid_result", "Invalid property descriptors");
+  parseCommandDescriptors(
+    value.map((item) => {
+      if (
+        !object(item) ||
+        typeof item.readOnly !== "boolean" ||
+        (item.unit !== undefined && typeof item.unit !== "string")
+      )
+        throw new ProtocolError("invalid_result", "Invalid property metadata");
+      return {
+        ...item,
+        inputSchema: {
+          type: "object",
+          properties: { value: item.schema },
+          additionalProperties: false,
+        },
+      };
+    }),
+  );
+  return value as PropertyDescriptor[];
+}
+export function parseBundles(value: unknown): CapabilityBundle[] {
+  if (!Array.isArray(value))
+    throw new ProtocolError("invalid_result", "Invalid capability bundles");
+  const ids = new Set<string>();
+  for (const item of value) {
+    if (
+      !object(item) ||
+      typeof item.id !== "string" ||
+      !/^[a-z0-9]+(?:[.-][a-z0-9]+)+$/.test(item.id) ||
+      ids.has(item.id) ||
+      !Number.isInteger(item.version) ||
+      (item.version as number) < 1 ||
+      !Array.isArray(item.commands) ||
+      !Array.isArray(item.properties) ||
+      [...item.commands, ...item.properties].some((id) => typeof id !== "string" || !id)
+    ) {
+      throw new ProtocolError("invalid_result", "Invalid capability bundle");
+    }
+    ids.add(item.id);
+  }
+  return value as CapabilityBundle[];
+}
 export class CommandRegistry {
   private commands = new Map<string, Command>();
+  private properties = new Map<string, Property>();
+  private bundles = new Map<string, CapabilityBundle>();
   private listeners = new Set<(topic: string, data: Json) => void>();
   register(command: Command): () => void {
     if (!command.id || this.commands.has(command.id))
       throw new Error(`Duplicate or empty command: ${command.id}`);
     this.commands.set(command.id, command);
-    this.publish("commands.changed", null);
+    this.publish(TOPIC_COMMANDS_CHANGED, null);
+    if (this.bundles.size) this.publish(TOPIC_BUNDLES_CHANGED, null);
     return () => {
       if (this.commands.get(command.id) !== command) return;
       this.commands.delete(command.id);
-      this.publish("commands.changed", null);
+      this.publish(TOPIC_COMMANDS_CHANGED, null);
+      if (this.bundles.size) this.publish(TOPIC_BUNDLES_CHANGED, null);
     };
   }
   list(): CommandDescriptor[] {
@@ -180,6 +256,114 @@ export class CommandRegistry {
     const result = await command.execute(params);
     assertJson(result);
     return result;
+  }
+  registerProperty(property: Property): () => void {
+    if (!property.id || this.properties.has(property.id))
+      throw new Error(`Duplicate or empty property: ${property.id}`);
+    parsePropertyDescriptors([
+      {
+        id: property.id,
+        title: property.title,
+        description: property.description,
+        schema: property.schema,
+        ...(property.unit === undefined ? {} : { unit: property.unit }),
+        available: true,
+        readOnly: !property.set,
+      },
+    ]);
+    this.properties.set(property.id, property);
+    this.publish(TOPIC_PROPERTIES_LIST_CHANGED, null);
+    if (this.bundles.size) this.publish(TOPIC_BUNDLES_CHANGED, null);
+    return () => {
+      if (this.properties.get(property.id) !== property) return;
+      this.properties.delete(property.id);
+      this.publish(TOPIC_PROPERTIES_LIST_CHANGED, null);
+      if (this.bundles.size) this.publish(TOPIC_BUNDLES_CHANGED, null);
+    };
+  }
+  listProperties(): PropertyDescriptor[] {
+    return [...this.properties.values()].map(
+      ({ get: _, set, writable, available, ...descriptor }) => ({
+        ...descriptor,
+        available: available?.() ?? true,
+        readOnly: !set || !(writable?.() ?? true),
+      }),
+    );
+  }
+  private property(id: string): Property {
+    const property = this.properties.get(id);
+    if (!property) throw new ProtocolError("unknown_property", `Unknown property: ${id}`);
+    if (!(property.available?.() ?? true))
+      throw new ProtocolError("unavailable", `Unavailable property: ${id}`);
+    return property;
+  }
+  async getProperty(id: string): Promise<Json> {
+    const property = this.property(id),
+      value = await property.get();
+    try {
+      validate(
+        {
+          type: "object",
+          properties: { value: property.schema },
+          required: ["value"],
+          additionalProperties: false,
+        },
+        { value },
+      );
+    } catch {
+      throw new ProtocolError("invalid_result", `Invalid value returned by property: ${id}`);
+    }
+    return value;
+  }
+  async setProperty(id: string, value: unknown): Promise<Json> {
+    const property = this.property(id);
+    if (!property.set || !(property.writable?.() ?? true))
+      throw new ProtocolError("read_only", `Read-only property: ${id}`);
+    const args = { value };
+    validate(
+      {
+        type: "object",
+        properties: { value: property.schema },
+        required: ["value"],
+        additionalProperties: false,
+      },
+      args,
+    );
+    await property.set(args.value as Json);
+    return this.notifyProperty(id);
+  }
+  async notifyProperty(id: string): Promise<Json> {
+    const value = await this.getProperty(id);
+    this.publish(TOPIC_PROPERTIES_CHANGED, { id, value });
+    return value;
+  }
+  registerBundle(bundle: CapabilityBundle): () => void {
+    parseBundles([bundle]);
+    if (this.bundles.has(bundle.id)) throw new Error(`Duplicate bundle: ${bundle.id}`);
+    if (
+      bundle.commands.some((id) => !this.commands.has(id)) ||
+      bundle.properties.some((id) => !this.properties.has(id))
+    ) {
+      throw new Error("Register a bundle's commands and properties first");
+    }
+    const snapshot = structuredClone(bundle);
+    this.bundles.set(bundle.id, snapshot);
+    this.publish(TOPIC_BUNDLES_CHANGED, null);
+    return () => {
+      if (this.bundles.get(bundle.id) === snapshot) {
+        this.bundles.delete(bundle.id);
+        this.publish(TOPIC_BUNDLES_CHANGED, null);
+      }
+    };
+  }
+  listBundles(): CapabilityBundle[] {
+    return [...this.bundles.values()]
+      .filter(
+        (bundle) =>
+          bundle.commands.every((id) => this.commands.has(id)) &&
+          bundle.properties.every((id) => this.properties.has(id)),
+      )
+      .map((bundle) => structuredClone(bundle));
   }
   publish(topic: string, data: Json): void {
     assertJson(data);

@@ -41,6 +41,27 @@ Topics are exact strings of 1–200 characters, with at most 128 subscriptions p
 
 Error codes: `invalid_params`, `invalid_result`, `unknown_method`, `unknown_command`, `unavailable`, `unsupported_version`, `not_initialized`, `limit_exceeded`, `message_too_large`, `internal_error`; SDK-local errors also include `timeout`, `closed`, and `invalid_midi`. The default request timeout is 5 seconds; configure `timeoutMs` per peer. Initialization requests repeat every 250 ms with the same ID until a response or timeout; initialization is idempotent. No other requests are retried. Timeouts do not imply rollback.
 
+## Optional MIDI 2 and property extensions (SDK 0.2)
+
+Wire version remains 1. Both initialization requests and responses now carry a `capabilities` string array. The SDK advertises `commands`, `events`, `webmidilink`, `properties`, and `bundles`, plus `ump` when `PeerOptions.ump` is true. Missing capabilities imply only the three original features. Unknown capability names are ignored. Features use the intersection of local and remote capabilities; `peer.supports(name)` reports that intersection only after initialization. Optional methods reject with `unsupported_capability` unless negotiated. These capability names are application protocol extensions, not UMP Endpoint Discovery or MIDI-CI negotiation messages.
+
+UMP framing is `ump,<word>[,<word>…]`: each word is exactly eight hexadecimal digits in protocol order. One message contains exactly one complete packet of 1, 2, 3, or 4 words as determined by its Message Type. Words must be unsigned integers from 0 to 4294967295; no signed JavaScript bitwise results, concatenated packets, MIDI running status or byte-order reinterpretation is accepted. Example: `ump,43913c00,abcd1234`. Unnegotiated or malformed incoming packets are ignored; sending without negotiation rejects. The SDK validates framing and packet length and preserves words, including packet types it does not interpret. JR and delta timing words do not establish a shared clock or schedule browser execution.
+
+| Method | Arguments | Result |
+| --- | --- | --- |
+| `properties.list` | `{}` | property descriptors |
+| `properties.get` | `{id}` | current scalar value |
+| `properties.set` | `{id,value}` | actual value read back after the setter completes |
+| `bundles.list` | `{}` | available application capability bundles |
+
+Property descriptors contain `id`, `title`, `description`, `schema` (the same scalar Parameter subset used by commands), optional `unit`, `available` and `readOnly`. Getters supply current values rather than discovery snapshots. Writability and availability are checked again on every call. Setter-only properties are not supported. Errors include `unknown_property`, `read_only`, `invalid_params`, and `unavailable`; non-JSON values are rejected. Nested state and arbitrary JSON property schemas are reserved for a future extension.
+
+Subscribe to `properties.changed` for `{id,value}` notifications and `properties.listChanged` for a `null` signal to repeat discovery. Successful SDK property writes publish the actual value. Hosts call `notifyProperty(id)` for external changes, or publish the same event shape from authoritative state. Notifications are not retained; subscribe before reading initial state, and tolerate duplicate notifications. Property getters/setters and commands invoke the same host application services.
+
+Bundles contain a namespaced `id` (such as `org.audiobus.transport`), a positive integer `version`, and arrays of required `commands` and `properties`. Register members before the bundle. A bundle is listed only while all its members are registered; availability and writability still vary at runtime. Bundles describe contracts and do not enable or disable MIDI behavior. `bundles.changed` signals bundle registration changes. These are not MIDI Association Profile IDs and must not be advertised as MIDI-CI Profiles.
+
+Additional SDK error codes are `unsupported_capability` and `invalid_ump`.
+
 ## WebMidiLink compatibility
 
 MIDI uses unmodified `midi,<hex-byte>,…`, one full message per postMessage, with no running status. MIDI may arrive before control initialization so existing Level 0 senders still work. Notes, controllers, system common/realtime, and complete SysEx are decoded; invalid byte ranges, message lengths, and concatenated messages are rejected. Receiving applications decide whether to allow SysEx and which messages to route. Message arrival time is used; version 1 adds no MIDI timestamp.

@@ -4,13 +4,19 @@ import {
   object,
   assertJson,
   parseCommandDescriptors,
+  parsePropertyDescriptors,
+  parseBundles,
+  type PropertyDescriptor,
+  type CapabilityBundle,
   type CommandDescriptor,
   type Json,
   type Params,
 } from "./registry.js";
 import type { Transport } from "./transport.js";
+import { decodeUmp, encodeUmp } from "./ump.js";
 export * from "./registry.js";
 export * from "./transport.js";
+export * from "./ump.js";
 
 export const PROTOCOL_VERSION = 1;
 export const CONTROL_PREFIX = "control,";
@@ -35,6 +41,9 @@ export interface PeerOptions {
   setPatch?: (patch: string) => void;
   onPatch?: (patch: string) => void;
   onReady?: () => void;
+  /** Explicit opt-in to UMP transport; both peers must advertise it. */
+  ump?: boolean;
+  onUmp?: (words: number[]) => void;
 }
 
 /** One full MIDI message; no running status, concatenated messages, or invalid data bytes. */
@@ -78,6 +87,7 @@ export class Peer {
   private topics = new Set<string>();
   private sequence = 0;
   private initialized = false;
+  private remoteCapabilities = new Set<string>();
   private closed = false;
   private unlisten: () => void;
   private unobserve: () => void;
@@ -101,14 +111,55 @@ export class Peer {
       throw new ProtocolError("message_too_large", "Message exceeds limit");
     this.transport.send(message);
   }
+  get capabilities(): string[] {
+    return [
+      "commands",
+      "events",
+      "webmidilink",
+      "properties",
+      "bundles",
+      ...(this.options.ump ? ["ump"] : []),
+    ];
+  }
+  supports(capability: string): boolean {
+    return (
+      this.initialized &&
+      this.capabilities.includes(capability) &&
+      this.remoteCapabilities.has(capability)
+    );
+  }
+  private readCapabilities(value: unknown): Set<string> {
+    if (value === undefined) return new Set(["commands", "events", "webmidilink"]);
+    if (!Array.isArray(value) || value.some((item) => typeof item !== "string"))
+      throw new ProtocolError("invalid_params", "Invalid capabilities");
+    return new Set(value);
+  }
+  private requireCapability(capability: string): void {
+    if (this.closed) throw new ProtocolError("closed", "Peer is closed");
+    if (!this.supports(capability))
+      throw new ProtocolError("unsupported_capability", `Capability not negotiated: ${capability}`);
+  }
+  private acceptCapabilities(value: unknown): void {
+    const capabilities = this.readCapabilities(value);
+    if (
+      this.initialized &&
+      (capabilities.size !== this.remoteCapabilities.size ||
+        [...capabilities].some((item) => !this.remoteCapabilities.has(item)))
+    ) {
+      throw new ProtocolError("invalid_params", "Capabilities cannot change within a connection");
+    }
+    this.remoteCapabilities = capabilities;
+  }
   async connect(): Promise<Json> {
     const result = await this.request("initialize", {
       protocolVersion: PROTOCOL_VERSION,
       ...this.options.identity,
+      capabilities: this.capabilities,
     });
     if (!object(result) || result.protocolVersion !== PROTOCOL_VERSION) {
       throw new ProtocolError("unsupported_version", "Peer did not negotiate protocol version 1");
     }
+    this.acceptCapabilities(result.capabilities);
     this.initialized = true;
     return result;
   }
@@ -147,6 +198,32 @@ export class Peer {
   }
   async discover(): Promise<CommandDescriptor[]> {
     return parseCommandDescriptors(await this.list());
+  }
+  async listProperties(): Promise<PropertyDescriptor[]> {
+    this.requireCapability("properties");
+    return parsePropertyDescriptors(await this.request("properties.list"));
+  }
+  async getProperty(id: string): Promise<Json> {
+    this.requireCapability("properties");
+    return this.request("properties.get", { id });
+  }
+  async setProperty(id: string, value: Json): Promise<Json> {
+    this.requireCapability("properties");
+    return this.request("properties.set", { id, value });
+  }
+  async listBundles(): Promise<CapabilityBundle[]> {
+    this.requireCapability("bundles");
+    return parseBundles(await this.request("bundles.list"));
+  }
+  sendUmp(words: ArrayLike<number>): void {
+    this.requireCapability("ump");
+    let message: string;
+    try {
+      message = encodeUmp(words);
+    } catch {
+      throw new ProtocolError("invalid_ump", "Expected one complete UMP packet");
+    }
+    this.transport.send(message);
   }
   private sendLink(message: string): void {
     if (this.closed) throw new ProtocolError("closed", "Peer is closed");
@@ -187,6 +264,12 @@ export class Peer {
   private async receive(message: unknown): Promise<void> {
     if (this.closed || typeof message !== "string" || message.length > MAX_MESSAGE_LENGTH) return;
     try {
+      if (message.startsWith("ump,")) {
+        if (!this.supports("ump")) return;
+        const words = decodeUmp(message);
+        if (words) this.options.onUmp?.(words);
+        return;
+      }
       if (message.startsWith("midi,")) {
         const bytes = decodeMidi(message);
         if (bytes) this.options.onMidi?.(bytes);
@@ -273,16 +356,33 @@ export class Peer {
         throw new ProtocolError("unsupported_version", "Expected protocol version 1");
       if (typeof params.name !== "string" || typeof params.version !== "string")
         throw new ProtocolError("invalid_params", "Expected peer identity");
+      this.acceptCapabilities(params.capabilities);
       this.initialized = true;
       return {
         ...this.options.identity,
         protocolVersion: PROTOCOL_VERSION,
-        capabilities: ["commands", "events", "webmidilink"],
+        capabilities: this.capabilities,
         maxMessageLength: MAX_MESSAGE_LENGTH,
       };
     }
     if (!this.initialized) throw new ProtocolError("not_initialized", "Initialize first");
     switch (method) {
+      case "properties.list":
+        this.requireCapability("properties");
+        return this.registry.listProperties() as unknown as Json;
+      case "properties.get":
+      case "properties.set":
+        this.requireCapability("properties");
+        if (typeof params.id !== "string")
+          throw new ProtocolError("invalid_params", "Expected property ID");
+        if (method === "properties.set" && !Object.hasOwn(params, "value"))
+          throw new ProtocolError("invalid_params", "Expected property value");
+        return method === "properties.get"
+          ? this.registry.getProperty(params.id)
+          : this.registry.setProperty(params.id, params.value);
+      case "bundles.list":
+        this.requireCapability("bundles");
+        return this.registry.listBundles() as unknown as Json;
       case "commands.list":
         return this.registry.list() as unknown as Json;
       case "commands.call":
@@ -307,6 +407,7 @@ export class Peer {
     if (this.closed) return;
     this.closed = true;
     this.initialized = false;
+    this.remoteCapabilities.clear();
     this.unlisten();
     this.unobserve();
     this.topics.clear();

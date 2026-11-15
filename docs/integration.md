@@ -45,6 +45,28 @@ Use `{mode:'webmidilink'}` for a legacy synth; it skips control initialization a
 
 For desktop IPC or another isolated transport, use `output.attachTransport(transport)`. Custom transports must authorize their peer. See [receiver.html](../examples/receiver.html) for a destination that supports both modes, optional sound, MIDI logs, commands, and patches. Browser audio still requires a local user gesture.
 
+## MIDI 2 and application contracts
+
+Enable `ump:true` on participating peers and provide `onUmp(words)` at receivers. `supports('ump')` becomes true only after both peers advertise it. Use `sendUmp(words)` for exact unsigned 32-bit words; no byte MIDI conversion is performed in the SDK. Old peers without the capability retain their existing byte MIDI and command path. Group-aware addressing and note ownership belong to each application's MIDI routing layer.
+
+The audioBus Protocol Input now dispatches UMP-backed commands, and its Output sends `command.ump` using the existing codec so untouched high-resolution values survive. `command.midiGroup` can retarget groups. Held notes and sustain are released in their original format, group and channel. Legacy destinations reject UMP by default. Explicit `allowMidi1Fallback:true` permits representable group-zero conversion, while nonzero groups and unsupported per-note messages still reject.
+
+```js
+registry.registerProperty({
+  id: 'transport.tempo', title: 'Tempo', description: 'Internal tempo', unit: 'BPM',
+  schema: { type: 'number', minimum: 10, maximum: 303 },
+  get: () => application.bpm,
+  set: value => application.setBpm(value),
+  writable: () => application.ownsClock
+})
+await peer.connect()
+console.log(await peer.listProperties())
+await peer.subscribe('properties.changed')
+await peer.setProperty('transport.tempo', 128)
+```
+
+Harmoneasy exposes tempo, playback-running and clock-source properties. Writable properties appear in its palette; the Output panel can discover/read/edit a destination's properties. The namespaced `org.audiobus.transport` version 1 bundle requires `transport.get`, `transport.setTempo`, `transport.start`, `transport.stop`, `app.panic`, plus `transport.tempo`, `transport.running`, and `transport.clockSource`. Other applications can register smaller custom bundles under different IDs and version their own contracts. These are application bundles rather than MIDI-CI Profiles; a native MIDI-CI adapter remains future work.
+
 ## OpenDAW and other applications
 
 Install the package and implement a registry using that application's own services. Pass it into a `Peer`, then attach a window transport pointing to Harmoneasy's window. No audioBus dependency is necessary. The example named OpenDAW is a simulated integration peer; this repository does not modify OpenDAW or claim that OpenDAW already supports the protocol.

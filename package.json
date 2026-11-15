@@ -1,6 +1,6 @@
 {
   "name": "audiobus-protocol",
-  "version": "0.1.0",
+  "version": "0.2.0",
   "description": "Discoverable, bidirectional application control alongside WebMidiLink MIDI",
   "type": "module",
   "main": "./dist/index.js",
@@ -11,6 +11,7 @@
     "build": "tsc -p tsconfig.json",
     "test": "npm run build && node --test tests/*.test.js",
     "example": "npm run build && node examples/peers.js",
+    "example:midi2": "npm run build && node examples/midi2.js",
     "prepare": "npm run build",
     "prepack": "npm run build"
   },

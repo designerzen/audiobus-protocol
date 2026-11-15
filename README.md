@@ -12,6 +12,7 @@ Requires Node.js 22+ and npm. From this repository:
 npm install
 npm test
 npm run example
+npm run example:midi2
 ```
 
 `npm run build` produces JavaScript and TypeScript declarations in `dist/`. Install directly from GitHub with `npm install git+https://github.com/designerzen/audiobus-protocol.git` (pin a commit for reproducible builds), install a local checkout with `npm install ../audiobus-protocol`, or use a workspace dependency. The `prepare` script builds Git installs automatically. This repository is not yet a published npm release.
@@ -60,6 +61,7 @@ The receiving peer can call back after the same handshake; it does not need a se
 ## Examples and integration
 
 - [Two in-memory peers](examples/peers.js): runnable connect → discover → read → subscribe → set → notification exchange, representing Harmoneasy and an OpenDAW integration.
+- [MIDI 2 and properties](examples/midi2.js): negotiated UMP, exact high-resolution words, a versioned capability bundle, and property discovery/write/subscription.
 - [Two browser windows](examples/browser.html): build first, then serve this repository with your preferred static HTTP server and open `/examples/browser.html`. It requires HTTP(S), not `file://`. This example uses an explicit readiness message before initialization.
 - [MIDI destination with optional sound](examples/receiver.html): a popup receiver for Harmoneasy's Protocol Output, with explicit origin pairing, tempo commands, panic, MIDI logging, and Level 1 patches.
 - [Wire protocol](docs/protocol.md): framing, lifecycle, methods, errors, and compatibility.
@@ -69,4 +71,10 @@ Only explicitly paired peers should receive a transport. `windowTransport` requi
 
 ## Initial scope
 
-Version 1 supports command discovery and calls, scalar argument validation, exact-topic subscriptions, timeouts, and WebMidiLink MIDI/optional patch exchange. `peer.discover()` validates remote descriptors before a client builds controls; `peer.list()` remains the raw discovery response. Graph edits, device parameters, presets, and transport commands are registered by applications, not hardcoded into the protocol. Initialization is retried every 250 ms until its timeout, allowing listeners to load; application commands are never retried. No network server, persistence, sample-accurate scheduling, or actual OpenDAW integration is included. A command timeout can occur after that command has already executed.
+Package 0.2 adds negotiated UMP, discoverable scalar properties and application-defined capability bundles while retaining wire protocol version 1 and older peers. Opt in with `ump:true` on both Peers and provide `onUmp` at receiving endpoints. `sendUmp()` sends one packet as unsigned 32-bit words, preserving MIDI 2 precision; it rejects unless both peers advertised UMP. Byte MIDI remains unchanged. No implicit MIDI 1 conversion takes place in the SDK.
+
+`registry.registerProperty()` describes a scalar using its schema, title, unit, getter and optional setter. Clients use `peer.listProperties()`, `getProperty(id)`, and `setProperty(id,value)`. Subscribe to `properties.changed` for `{id,value}` updates and `properties.listChanged` for metadata changes. Hosts call `registry.notifyProperty(id)` after local state changes. Writes validate the value, recheck dynamic writability, invoke the host setter, read back actual state and publish it. `registerBundle()` groups required commands and properties under a namespaced ID and integer version; clients use `peer.listBundles()`.
+
+These properties and bundles are inspired by MIDI-CI Property Exchange and Profiles; they are application protocol features, not a MIDI-CI implementation or standardized MIDI Profiles. Actual MIDI-CI framing, identity, chunking and resource adapters are not implemented. UMP timing messages can be transported unchanged, but are not interpreted as browser scheduling instructions; there is no clock synchronization or sample-accurate scheduler.
+
+The original commands, scalar argument validation, exact-topic subscriptions, timeouts and WebMidiLink patch exchange remain available. `peer.discover()` validates command metadata; `peer.list()` returns raw JSON. Initialization retries every 250 ms until its timeout; other requests are never retried. Graph edits, device parameters, presets and transport commands belong to the host. No network server, persistence or actual OpenDAW integration is included. A timed-out write or command may already have executed.

@@ -22,9 +22,9 @@ function stop(key) {
   voice.oscillator.stop(); voice.oscillator.disconnect(); voice.gain.disconnect(); voices.delete(key)
 }
 function panic() { for (const key of voices.keys()) stop(key); sustain.clear() }
-function midi(bytes) {
+function midi(bytes, group = 0) {
   log({ midi: [...bytes] })
-  const kind = bytes[0] >> 4, channel = bytes[0] & 15, key = `${channel}:${bytes[1]}`
+  const kind = bytes[0] >> 4, channel = bytes[0] & 15, key = `${group}:${channel}:${bytes[1]}`, pedal = `${group}:${channel}`
   if (kind === 9 && bytes[2] > 0) {
     stop(key)
     if (!context || context.state !== 'running') return
@@ -32,18 +32,18 @@ function midi(bytes) {
     oscillator.frequency.value = 440 * 2 ** ((bytes[1] - 69) / 12)
     gain.gain.value = bytes[2] / 127 * .08
     oscillator.connect(gain).connect(context.destination); oscillator.start()
-    voices.set(key, { oscillator, gain, channel, released: false })
+    voices.set(key, { oscillator, gain, channel, group, released: false })
   } else if (kind === 8 || kind === 9) {
-    if (sustain.has(channel) && voices.has(key)) voices.get(key).released = true
+    if (sustain.has(pedal) && voices.has(key)) voices.get(key).released = true
     else stop(key)
   } else if (kind === 11 && bytes[1] === 64) {
-    if (bytes[2] >= 64) sustain.add(channel)
+    if (bytes[2] >= 64) sustain.add(pedal)
     else {
-      sustain.delete(channel)
-      for (const [key, voice] of voices) if (voice.channel === channel && voice.released) stop(key)
+      sustain.delete(pedal)
+      for (const [key, voice] of voices) if (voice.channel === channel && voice.group === group && voice.released) stop(key)
     }
   } else if (kind === 11 && [120, 123].includes(bytes[1])) {
-    for (const [key, voice] of voices) if (voice.channel === channel) stop(key)
+    for (const [key, voice] of voices) if (voice.channel === channel && voice.group === group) stop(key)
   }
 }
 commands.register({ id: 'transport.get', title: 'Read destination tempo', description: 'Read current BPM', inputSchema: EMPTY_SCHEMA, execute: () => ({ bpm }) })
@@ -52,6 +52,23 @@ commands.register({ id: 'transport.setTempo', title: 'Set destination tempo', de
   execute: args => { bpm = args.bpm; commands.publish('transport.changed', { bpm }); log({ bpm }); return { bpm } }
 })
 commands.register({ id: 'app.panic', title: 'Silence destination', description: 'Release all demo voices', inputSchema: EMPTY_SCHEMA, execute: () => { panic(); return null } })
+commands.registerProperty({ id: 'transport.tempo', title: 'Tempo', description: 'Destination tempo', unit: 'BPM',
+  schema: { type: 'number', minimum: 10, maximum: 303 }, get: () => bpm,
+  set: async value => { await commands.call('transport.setTempo', { bpm: value }) }
+})
+commands.registerBundle({ id: 'org.audiobus.demo-receiver', version: 1,
+  commands: ['transport.get', 'transport.setTempo', 'app.panic'], properties: ['transport.tempo'] })
+function ump(words) {
+  log({ ump: words.map(word => word.toString(16).padStart(8, '0')) })
+  const type = words[0] >>> 28, group = (words[0] >>> 24) & 15
+  const status = (words[0] >>> 16) & 255, note = (words[0] >>> 8) & 127
+  if (type === 2) midi([status, note, words[0] & 127], group)
+  // This demo synth approximates velocity/controllers for sound; logged UMP remains exact.
+  else if (type === 4 && [8, 9, 11].includes(status >> 4)) {
+    const value = (status >> 4) === 9 ? Math.max(1, words[1] >>> 25) : words[1] >>> 25
+    midi([status, note, value], group)
+  }
+}
 document.querySelector('#audio').addEventListener(EVENT_CLICK, async () => {
   context ??= new AudioContext()
   await context.resume()
@@ -65,7 +82,7 @@ document.querySelector('#accept').addEventListener(EVENT_CLICK, () => {
     const transport = windowTransport(window.opener, origin)
     peer?.close(); panic()
     peer = new Peer(transport, {
-      identity: { name: 'Protocol receiver example', version: '1' }, registry: commands, onMidi: midi,
+      identity: { name: 'Protocol receiver example', version: '1' }, registry: commands, onMidi: midi, ump: true, onUmp: ump,
       getPatch: () => encodeURIComponent(JSON.stringify({ bpm })),
       setPatch: patch => {
         const value = JSON.parse(decodeURIComponent(patch))
