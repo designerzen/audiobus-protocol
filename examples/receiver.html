@@ -1,0 +1,81 @@
+<!doctype html>
+<html lang="en">
+<meta charset="utf-8">
+<title>audioBus Protocol MIDI destination</title>
+<style>body { font: 18px system-ui; max-width: 48rem; margin: 3rem auto; padding: 1rem; } input, button { font: inherit; padding: .5rem; } pre { white-space: pre-wrap; }</style>
+<h1>MIDI and command destination</h1>
+<p>Open this page from Harmoneasy's Protocol Output. Enter the exact origin of the opening application, then accept the connection and press Connect in the Output.</p>
+<label>Opening application origin <input id="origin" type="url" placeholder="http://localhost:1999"></label>
+<button id="accept">Accept opening application</button>
+<button id="audio">Enable sound</button>
+<p id="state" role="status">Not paired</p>
+<pre id="log"></pre>
+<script type="module">
+import { Peer, CommandRegistry, EMPTY_SCHEMA, windowTransport } from '../dist/index.js'
+const EVENT_CLICK = 'click', EVENT_PAGE_HIDE = 'pagehide'
+const commands = new CommandRegistry(), voices = new Map(), sustain = new Set()
+let peer, context, bpm = 120
+const log = value => { document.querySelector('#log').textContent = JSON.stringify(value, null, 2) + '\n' + document.querySelector('#log').textContent.slice(0, 4000) }
+function stop(key) {
+  const voice = voices.get(key)
+  if (!voice) return
+  voice.oscillator.stop(); voice.oscillator.disconnect(); voice.gain.disconnect(); voices.delete(key)
+}
+function panic() { for (const key of voices.keys()) stop(key); sustain.clear() }
+function midi(bytes) {
+  log({ midi: [...bytes] })
+  const kind = bytes[0] >> 4, channel = bytes[0] & 15, key = `${channel}:${bytes[1]}`
+  if (kind === 9 && bytes[2] > 0) {
+    stop(key)
+    if (!context || context.state !== 'running') return
+    const oscillator = context.createOscillator(), gain = context.createGain()
+    oscillator.frequency.value = 440 * 2 ** ((bytes[1] - 69) / 12)
+    gain.gain.value = bytes[2] / 127 * .08
+    oscillator.connect(gain).connect(context.destination); oscillator.start()
+    voices.set(key, { oscillator, gain, channel, released: false })
+  } else if (kind === 8 || kind === 9) {
+    if (sustain.has(channel) && voices.has(key)) voices.get(key).released = true
+    else stop(key)
+  } else if (kind === 11 && bytes[1] === 64) {
+    if (bytes[2] >= 64) sustain.add(channel)
+    else {
+      sustain.delete(channel)
+      for (const [key, voice] of voices) if (voice.channel === channel && voice.released) stop(key)
+    }
+  } else if (kind === 11 && [120, 123].includes(bytes[1])) {
+    for (const [key, voice] of voices) if (voice.channel === channel) stop(key)
+  }
+}
+commands.register({ id: 'transport.get', title: 'Read destination tempo', description: 'Read current BPM', inputSchema: EMPTY_SCHEMA, execute: () => ({ bpm }) })
+commands.register({ id: 'transport.setTempo', title: 'Set destination tempo', description: 'Set BPM',
+  inputSchema: { type: 'object', properties: { bpm: { type: 'number', minimum: 10, maximum: 303 } }, required: ['bpm'], additionalProperties: false },
+  execute: args => { bpm = args.bpm; commands.publish('transport.changed', { bpm }); log({ bpm }); return { bpm } }
+})
+commands.register({ id: 'app.panic', title: 'Silence destination', description: 'Release all demo voices', inputSchema: EMPTY_SCHEMA, execute: () => { panic(); return null } })
+document.querySelector('#audio').addEventListener(EVENT_CLICK, async () => {
+  context ??= new AudioContext()
+  await context.resume()
+  document.querySelector('#state').textContent = 'Sound enabled'
+})
+document.querySelector('#accept').addEventListener(EVENT_CLICK, () => {
+  try {
+    if (!window.opener) throw Error('No opening window; open this page from the Output panel. Browser isolation policies may also remove the opener.')
+    const origin = new URL(document.querySelector('#origin').value).origin
+    // Validate before replacing a working peer. Never infer or accept an arbitrary sender.
+    const transport = windowTransport(window.opener, origin)
+    peer?.close(); panic()
+    peer = new Peer(transport, {
+      identity: { name: 'Protocol receiver example', version: '1' }, registry: commands, onMidi: midi,
+      getPatch: () => encodeURIComponent(JSON.stringify({ bpm })),
+      setPatch: patch => {
+        const value = JSON.parse(decodeURIComponent(patch))
+        void commands.call('transport.setTempo', value).catch(error => log(error.message))
+      }
+    })
+    peer.announceReady()
+    document.querySelector('#state').textContent = 'Paired. Press Connect in the Output; enable sound here to hear MIDI.'
+  } catch (error) { log(error.message) }
+})
+window.addEventListener(EVENT_PAGE_HIDE, () => { panic(); peer?.close(); void context?.close() })
+</script>
+</html>

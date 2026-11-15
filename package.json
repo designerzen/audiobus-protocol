@@ -1,0 +1,19 @@
+{
+  "name": "audiobus-protocol",
+  "version": "0.1.0",
+  "description": "Discoverable, bidirectional application control alongside WebMidiLink MIDI",
+  "type": "module",
+  "main": "./dist/index.js",
+  "types": "./dist/index.d.ts",
+  "exports": { ".": { "types": "./dist/index.d.ts", "import": "./dist/index.js" } },
+  "files": ["dist", "docs", "examples", "README.md"],
+  "scripts": {
+    "build": "tsc -p tsconfig.json",
+    "test": "npm run build && node --test tests/*.test.js",
+    "example": "npm run build && node examples/peers.js",
+    "prepare": "npm run build",
+    "prepack": "npm run build"
+  },
+  "devDependencies": { "typescript": "~5.9.3" },
+  "repository": { "type": "git", "url": "https://github.com/designerzen/audiobus-protocol.git" }
+}

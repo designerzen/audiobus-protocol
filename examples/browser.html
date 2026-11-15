@@ -1,0 +1,45 @@
+<!doctype html>
+<html lang="en">
+<meta charset="utf-8">
+<title>audioBus Protocol — two browser peers</title>
+<style>body { font: 18px system-ui; max-width: 50rem; margin: 3rem auto; } button { padding: .7rem; } pre { white-space: pre-wrap; }</style>
+<h1>audioBus Protocol browser example</h1>
+<p>Open a second peer, discover its commands, and set its tempo. Both windows expose the same command.</p>
+<button id="open">Open peer</button> <button id="set" disabled>Set remote tempo to 128 BPM</button>
+<pre id="log" role="status"></pre>
+<script type="module">
+import { CommandRegistry, Peer, windowTransport } from '../dist/index.js'
+const log = value => document.querySelector('#log').textContent += JSON.stringify(value, null, 2) + '\n'
+const registry = new CommandRegistry()
+let bpm = 120, peer
+registry.register({ id: 'transport.setTempo', title: 'Set tempo', description: 'Set local BPM',
+  inputSchema: { type: 'object', properties: { bpm: { type: 'number', minimum: 10, maximum: 303 } }, required: ['bpm'], additionalProperties: false },
+  execute: args => { bpm = args.bpm; log({ localBpm: bpm }); registry.publish('transport.changed', { bpm }); return { bpm } }
+})
+function attach(target) {
+  peer = new Peer(windowTransport(target, location.origin), { identity: { name: 'Browser example', version: '1' }, registry, onEvent: (topic, data) => log({ topic, data }) })
+  document.querySelector('#set').disabled = false
+}
+// An application readiness message avoids sending initialization before the popup loads.
+if (window.opener) {
+  attach(window.opener)
+  window.opener.postMessage('example,ready', location.origin)
+}
+document.querySelector('#open').onclick = () => {
+  const target = window.open(location.href, '_blank')
+  if (!target) { log('Allow popups and try again.'); return }
+  const ready = async event => {
+    if (event.source !== target || event.origin !== location.origin || event.data !== 'example,ready') return
+    window.removeEventListener('message', ready)
+    peer?.close(); attach(target)
+    try { log(await peer.connect()); log(await peer.list()); await peer.subscribe('transport.changed') }
+    catch (error) { log(error.message) }
+  }
+  window.addEventListener('message', ready)
+}
+document.querySelector('#set').onclick = async () => {
+  try { log(await peer.call('transport.setTempo', { bpm: 128 })) } catch (error) { log(error.message) }
+}
+window.addEventListener('pagehide', () => peer?.close())
+</script>
+</html>
