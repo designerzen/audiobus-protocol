@@ -31,6 +31,18 @@ A window transport proves which window and origin sent a message, not that a per
 
 Until a matching code arrives, the requiring peer ignores `midi`, `ump` and `link` messages and rejects every request except `initialize` with `unauthorized`. This holds even after the requiring peer has initialized the other side itself, so a peer cannot gain access by waiting to be initialized. After `MAX_PAIRING_ATTEMPTS` (5) failed initializations, retried copies included, the peer rejects all codes until it is replaced; generate a new code when pairing again. Inbound events are also ignored until then. `peer.isAuthorized` and `onAuthorized` report acceptance. Legacy WebMidiLink senders never initialize, so they cannot present a code. Codes are short-lived proof of a person's intent, not a secret for an untrusted transport: they travel inside the authorized window channel.
 
+### Accepting unpaired senders
+
+A host may let a person opt in to control from any window without pairing, as Harmoneasy's audioBus Protocol input does with **Accept control from any window without pairing**. The SDK has no wildcard transport; the host listens for `message` events itself and creates one Peer per sending window, with a transport whose `send` posts only to that window and that event's exact origin. Hosts doing this should:
+
+- keep it off by default, make it an explicit choice, and say that any page able to message the window gains control;
+- ignore messages without a source window or with an empty or `null` origin, since replies could only be broadcast with `*`;
+- start a fresh session, releasing its held notes, when a known window's origin changes;
+- cap the number of sessions and free the slots of closed windows;
+- route each session's MIDI through its own note tracking, so closing one session releases only its notes.
+
+The sender connects with an ordinary `windowTransport` to the host window and its origin; no pairing code is involved.
+
 ## Methods
 
 | Method | Arguments | Result |

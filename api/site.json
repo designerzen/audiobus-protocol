@@ -1,0 +1,80 @@
+{
+	"title": "audioBus Protocol",
+	"repository": "https://github.com/designerzen/audiobus-protocol",
+	"output": "_site",
+	"copy": ["dist", "examples", "api"],
+	"navigation": [
+		{ "href": "index.html", "label": "Overview" },
+		{ "href": "demos.html", "label": "Demos" },
+		{ "href": "docs/protocol.html", "label": "Wire protocol" },
+		{ "href": "docs/integration.html", "label": "Integration" }
+	],
+	"pages": [
+		{ "source": "README.md", "output": "index.html", "lede": true },
+		{ "source": "docs/protocol.md", "output": "docs/protocol.html" },
+		{ "source": "docs/integration.md", "output": "docs/integration.html" }
+	],
+	"demos": {
+		"output": "demos.html",
+		"title": "Demos",
+		"lede": "Each demo runs the built SDK from dist/ in your browser. Window demos open a popup, so allow popups for this site.",
+		"sections": [
+			{
+				"id": "harmoneasy",
+				"title": "Control Harmoneasy",
+				"intro": "Harmoneasy's audioBus Protocol input exposes its transport, MIDI commands and every control in its command palette.",
+				"demos": [
+					{
+						"title": "Remote control without pairing",
+						"description": "Open or embed Harmoneasy, tick Accept control from any window in its audioBus Protocol input, then play notes, bend pitch, run the transport and press any interface control from this page.",
+						"href": "api/remote-control.html",
+						"source": "api/remote-control.html"
+					}
+				]
+			},
+			{
+				"id": "browser-windows",
+				"title": "Two browser windows",
+				"demos": [
+					{
+						"title": "Pairing codes and retained state",
+						"description": "The popup did not choose its peer, so it shows a code. Enter it to connect, then watch tempo state arrive with the subscription and follow changes.",
+						"href": "examples/pairing.html",
+						"source": "examples/pairing.html"
+					},
+					{
+						"title": "Two peers, symmetric commands",
+						"description": "Open a second window, discover its commands and set its tempo. Both windows expose the same command.",
+						"href": "examples/browser.html",
+						"source": "examples/browser.html"
+					},
+					{
+						"title": "MIDI and command destination",
+						"description": "A receiver for Harmoneasy's audioBus Protocol Output: notes, UMP, tempo commands, panic and patches, with optional sound. Open it from the Output by entering this page's examples/receiver.html address.",
+						"href": "examples/receiver.html",
+						"source": "examples/receiver.html"
+					}
+				]
+			},
+			{
+				"id": "in-memory",
+				"title": "In-memory peers",
+				"intro": "These run the Node examples unchanged with an in-memory transport and show their console output.",
+				"demos": [
+					{
+						"title": "Connect, discover, subscribe, set",
+						"description": "Two applications exchange identity, list commands, read state and receive a tempo change event.",
+						"href": "api/console.html?example=peers",
+						"source": "examples/peers.js"
+					},
+					{
+						"title": "MIDI 2 and properties",
+						"description": "Negotiated UMP with exact high-resolution words, a capability bundle, and property discovery and writes.",
+						"href": "api/console.html?example=midi2",
+						"source": "examples/midi2.js"
+					}
+				]
+			}
+		]
+	}
+}

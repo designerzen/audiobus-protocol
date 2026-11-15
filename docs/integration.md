@@ -67,6 +67,34 @@ await peer.setProperty('transport.tempo', 128)
 
 Harmoneasy exposes tempo, playback-running and clock-source properties. Writable properties appear in its palette; the Output panel can discover/read/edit a destination's properties. The namespaced `org.audiobus.transport` version 1 bundle requires `transport.get`, `transport.setTempo`, `transport.start`, `transport.stop`, `app.panic`, plus `transport.tempo`, `transport.running`, and `transport.clockSource`. Other applications can register smaller custom bundles under different IDs and version their own contracts. These are application bundles rather than MIDI-CI Profiles; a native MIDI-CI adapter remains future work.
 
+## Control Harmoneasy
+
+Harmoneasy's audioBus Protocol input exposes everything a controller needs through discovery:
+
+- application commands and properties: `transport.get`, `transport.setTempo`, `transport.start`, `transport.stop`, `app.panic`, and retained `transport.changed` state;
+- MIDI commands that play into the input's chain: `midi.noteOn`, `midi.noteOff`, `midi.polyAftertouch`, `midi.channelAftertouch`, `midi.pitchBend`, `midi.controlChange`, `midi.programChange` and `midi.allNotesOff`, grouped as the `org.audiobus.midi` bundle;
+- every control in its command palette: `ui.list` returns IDs, kinds, values and choices, `ui.activate` presses buttons and toggles, and `ui.setValue` sets choices, numbers and text.
+
+Pair with the input as usual, or tick **Accept control from any window without pairing** in its panel and press its Connect button. A page that opened or embeds Harmoneasy can then connect without a code:
+
+```js
+import { Peer, windowTransport } from 'audiobus-protocol'
+
+const harmoneasy = window.open('https://designerzen.github.io/harmoneasy/', 'harmoneasy')
+const peer = new Peer(windowTransport(harmoneasy, 'https://designerzen.github.io'), {
+  identity: { name: 'My controller', version: '1' },
+  timeoutMs: 15000 // initialization repeats until the input is listening
+})
+await peer.connect()
+await peer.call('midi.noteOn', { note: 60, velocity: 100 })
+await peer.call('midi.pitchBend', { value: 4096 })
+await peer.call('midi.noteOff', { note: 60 })
+const controls = await peer.call('ui.list', { query: 'reverb' })
+await peer.call('ui.activate', { id: controls[0].id })
+```
+
+Harmoneasy deployments that send `Cross-Origin-Opener-Policy: same-origin` cut the link to an opening window; embed those in an iframe and use `iframe.contentWindow` instead. Unpaired control is off by default and saved with a project once enabled. Only enable it for pages you trust: an unpaired page can play notes and press any control. The [remote control demo](../api/remote-control.html) does all of this from a web page.
+
 ## OpenDAW and other applications
 
 Install the package and implement a registry using that application's own services. Pass it into a `Peer`, then attach a window transport pointing to Harmoneasy's window. No audioBus dependency is necessary. The example named OpenDAW is a simulated integration peer; this repository does not modify OpenDAW or claim that OpenDAW already supports the protocol.

@@ -66,13 +66,14 @@ The receiving peer can call back after the same handshake; it does not need a se
 - [Two in-memory peers](examples/peers.js): runnable connect → discover → read → subscribe → set → notification exchange, representing Harmoneasy and an OpenDAW integration.
 - [MIDI 2 and properties](examples/midi2.js): negotiated UMP, exact high-resolution words, a versioned capability bundle, and property discovery/write/subscription.
 - [Two browser windows](examples/browser.html): build first, then serve this repository with your preferred static HTTP server and open `/examples/browser.html`. It requires HTTP(S), not `file://`. This example uses an explicit readiness message before initialization.
+- [Harmoneasy remote control](api/remote-control.html): control Harmoneasy without pairing, from notes and pitch bend to any control in its command palette. See [Control Harmoneasy](docs/integration.md#control-harmoneasy).
 - [Pairing codes and retained state](examples/pairing.html): a popup that requires a pairing code, and a controller that receives tempo state with its subscription.
-- [Example console](examples/console.html): runs the in-memory examples in a browser and shows their output.
+- [Example console](api/console.html): runs the in-memory examples in a browser and shows their output.
 - [MIDI destination with optional sound](examples/receiver.html): a popup receiver for Harmoneasy's Protocol Output, with explicit origin pairing, tempo commands, panic, MIDI logging, and Level 1 patches.
 - [Wire protocol](docs/protocol.md): framing, lifecycle, methods, errors, and compatibility.
 - [Application integration](docs/integration.md): audioBus Input, Output and command palette patterns.
 
-Only explicitly paired peers should receive a transport. `windowTransport` requires an exact origin and checks both `event.source` and `event.origin`; it never accepts a wildcard. Origin validation establishes which application is connected, not which commands it should be allowed to execute: expose a registry appropriate to that connection. When the peer window was not chosen by your application, such as `window.opener`, require a pairing code shown to the person (`generatePairingCode()`, `requirePairingCode`, `pairingCode`); see [pairing codes](docs/protocol.md#pairing-codes-sdk-03). Commands requiring a browser user gesture may still require local interaction.
+Only explicitly paired peers should receive a transport. `windowTransport` requires an exact origin and checks both `event.source` and `event.origin`; it never accepts a wildcard. Origin validation establishes which application is connected, not which commands it should be allowed to execute: expose a registry appropriate to that connection. When the peer window was not chosen by your application, such as `window.opener`, require a pairing code shown to the person (`generatePairingCode()`, `requirePairingCode`, `pairingCode`); see [pairing codes](docs/protocol.md#pairing-codes-sdk-03). Hosts that let people opt in to control without pairing should follow [accepting unpaired senders](docs/protocol.md#accepting-unpaired-senders). Commands requiring a browser user gesture may still require local interaction.
 
 ## Initial scope
 

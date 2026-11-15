@@ -14,7 +14,7 @@
     "example:midi2": "npm run build && node examples/midi2.js",
     "prepare": "npm run build",
     "prepack": "npm run build",
-    "build:site": "npm run build && node scripts/build-site.mjs"
+    "build:site": "npm run build && node api/build.mjs"
   },
   "devDependencies": { "marked": "18.2.0", "typescript": "~5.9.3" },
   "repository": { "type": "git", "url": "https://github.com/designerzen/audiobus-protocol.git" }

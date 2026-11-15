@@ -38,14 +38,14 @@ async function run() {
   output.textContent = ''
   try {
     // A fresh module instance each run, so the example executes again.
-    await import(`./${name}.js?run=${Date.now()}`)
+    await import(`../examples/${name}.js?run=${Date.now()}`)
   } catch (error) {
     output.textContent += `Error: ${error.message}\n`
   }
 }
 select.addEventListener(EVENT_CHANGE, () => { location.search = `?example=${select.value}` })
 document.querySelector('#run').addEventListener(EVENT_CLICK, run)
-source.textContent = await (await fetch(`./${name}.js`)).text()
+source.textContent = await (await fetch(`../examples/${name}.js`)).text()
 await run()
 </script>
 </html>

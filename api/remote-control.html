@@ -1,0 +1,253 @@
+<!doctype html>
+<html lang="en">
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Harmoneasy remote control</title>
+<meta name="description" content="Control Harmoneasy without pairing: notes, pitch bend, transport and every command palette control">
+<link rel="stylesheet" href="site.css">
+<style>
+  main { max-width: 64rem; }
+  fieldset { border: 1px solid var(--border); border-radius: 10px; padding: 1rem; margin: 0 0 1rem; background: var(--surface); }
+  legend { font-weight: 650; padding: 0 .3rem; }
+  input, select, button { font: inherit; padding: .35rem .6rem; }
+  input[type="url"] { width: 100%; }
+  .row { display: flex; flex-wrap: wrap; gap: .6rem 1rem; align-items: center; margin: .5rem 0; }
+  .keys { display: flex; gap: 2px; overflow-x: auto; padding-bottom: .3rem; touch-action: none; user-select: none; }
+  .keys button { min-width: 2.2rem; height: 6rem; display: flex; align-items: flex-end; justify-content: center; border: 1px solid var(--border); border-radius: 0 0 6px 6px; background: #fff; color: #222; }
+  .keys button.black { background: #222; color: #eee; height: 4rem; }
+  .keys button[aria-pressed="true"] { background: var(--accent); color: #fff; }
+  #frame { width: 100%; height: 34rem; border: 1px solid var(--border); border-radius: 10px; }
+  #controls { list-style: none; padding: 0; margin: 0; display: grid; gap: .4rem; }
+  #controls li { display: flex; flex-wrap: wrap; gap: .5rem; align-items: center; border-bottom: 1px solid var(--border); padding: .3rem 0; }
+  #controls small { color: var(--muted); }
+  .grow { flex: 1 1 14rem; }
+  [disabled] { opacity: .55; }
+</style>
+<main>
+<p><a href="../demos.html">All demos</a></p>
+<h1>Harmoneasy remote control</h1>
+<p class="lede">Control Harmoneasy from this page without pairing: play notes, bend pitch, run the transport and press any control in its command palette.</p>
+
+<fieldset>
+  <legend>1. Open Harmoneasy</legend>
+  <label>Harmoneasy address <input id="url" type="url"></label>
+  <div class="row">
+    <label><input type="radio" name="mode" value="popup" checked> New window</label>
+    <label><input type="radio" name="mode" value="embed"> Embed on this page</label>
+    <button id="open">Open Harmoneasy</button>
+  </div>
+  <p><small>Harmoneasy builds that send <code>Cross-Origin-Opener-Policy: same-origin</code> cut the link to a window that opens them; embed those instead. Browser audio still needs a click inside Harmoneasy.</small></p>
+  <div id="stage"></div>
+</fieldset>
+
+<fieldset>
+  <legend>2. Allow control and connect</legend>
+  <p>In Harmoneasy, open the <strong>audioBus Protocol</strong> input in the graph, tick <strong>Accept control from any window without pairing</strong> and press its <strong>Connect</strong> button. Then press Connect here. Connecting keeps trying for 15 seconds.</p>
+  <div class="row"><button id="connect" disabled>Connect</button> <span id="state" role="status">Open Harmoneasy first.</span></div>
+</fieldset>
+
+<fieldset id="play" disabled>
+  <legend>3. Play</legend>
+  <div class="row">
+    <label>Channel <select id="channel"></select></label>
+    <label>Velocity <input id="velocity" type="range" min="1" max="127" value="100"></label>
+    <label>Octave <input id="octave" type="number" min="1" max="7" value="4"></label>
+  </div>
+  <div class="keys" id="keys" aria-label="Keyboard"></div>
+  <div class="row">
+    <label class="grow">Pitch bend <input id="bend" type="range" min="-8192" max="8191" value="0"></label>
+    <label class="grow">Modulation <input id="modulation" type="range" min="0" max="127" value="0"></label>
+    <label class="grow">Channel aftertouch <input id="pressure" type="range" min="0" max="127" value="0"></label>
+  </div>
+</fieldset>
+
+<fieldset id="transport" disabled>
+  <legend>4. Transport</legend>
+  <div class="row">
+    <button data-command="transport.start">Play</button>
+    <button data-command="transport.stop">Stop</button>
+    <button data-command="app.panic">Panic</button>
+    <label>Tempo <input id="tempo" type="number" min="10" max="303" step="1" value="114"></label>
+    <button id="set-tempo">Set tempo</button>
+    <span>Now: <strong id="transport-state">—</strong></span>
+  </div>
+</fieldset>
+
+<fieldset id="interface" disabled>
+  <legend>5. Any control in the command palette</legend>
+  <div class="row">
+    <label class="grow">Search <input id="query" type="search" placeholder="for example: reverb, volume, record"></label>
+    <button id="list">List controls</button>
+  </div>
+  <ul id="controls"></ul>
+</fieldset>
+</main>
+<script type="module">
+import { Peer, windowTransport } from '../dist/index.js'
+const EVENT_CLICK = 'click', EVENT_INPUT = 'input', EVENT_CHANGE = 'change', EVENT_PAGE_HIDE = 'pagehide'
+const EVENT_POINTER_DOWN = 'pointerdown', EVENT_POINTER_UP = 'pointerup', EVENT_POINTER_LEAVE = 'pointerleave', EVENT_POINTER_CANCEL = 'pointercancel'
+const DEFAULT_URL = 'https://designerzen.github.io/harmoneasy/presets/songs/never-gonna-jam-everything/'
+const NAMES = ['C', 'C♯', 'D', 'D♯', 'E', 'F', 'F♯', 'G', 'G♯', 'A', 'A♯', 'B']
+const $ = (selector) => document.querySelector(selector)
+const state = (text) => { $('#state').textContent = text }
+let target, origin, peer
+
+$('#url').value = DEFAULT_URL
+for (let channel = 1; channel <= 16; channel++) $('#channel').append(new Option(String(channel), String(channel)))
+const channel = () => Number($('#channel').value)
+const enable = (on) => { for (const id of ['#play', '#transport', '#interface']) $(id).disabled = !on }
+// Calls are sent in order; failures are reported without interrupting playing.
+const send = (command, args = {}) =>
+  peer ? peer.call(command, args).catch((error) => { state(`${command}: ${error.message}`) }) : Promise.resolve()
+
+$('#open').addEventListener(EVENT_CLICK, () => {
+  try {
+    const address = new URL($('#url').value)
+    if (!['http:', 'https:'].includes(address.protocol)) throw new Error('Use an HTTP or HTTPS address')
+    peer?.close(); peer = undefined; enable(false)
+    $('#stage').replaceChildren()
+    origin = address.origin
+    if (document.querySelector('input[name="mode"]:checked').value === 'embed') {
+      const frame = document.createElement('iframe')
+      frame.id = 'frame'
+      frame.src = address.href
+      frame.allow = 'midi; autoplay; gamepad; fullscreen'
+      frame.title = 'Harmoneasy'
+      $('#stage').append(frame)
+      target = frame.contentWindow
+    } else {
+      target = window.open(address.href, 'harmoneasy')
+      if (!target) throw new Error('Allow popups for this page, or embed Harmoneasy instead')
+    }
+    $('#connect').disabled = false
+    state('Harmoneasy is opening. Allow control in its audioBus Protocol input, then press Connect.')
+  } catch (error) { state(error.message) }
+})
+
+const showTransport = (data) => {
+  if (data && typeof data === 'object') $('#transport-state').textContent = `${data.running ? 'playing' : 'stopped'}, ${data.bpm} BPM, ${data.clockSource} clock`
+}
+
+$('#connect').addEventListener(EVENT_CLICK, async () => {
+  peer?.close()
+  enable(false)
+  peer = new Peer(windowTransport(target, origin), {
+    identity: { name: 'audioBus remote control demo', version: '1' },
+    // Initialization repeats until Harmoneasy's input is listening.
+    timeoutMs: 15000,
+    onEvent: (topic, data) => { if (topic === 'transport.changed') showTransport(data) }
+  })
+  state('Connecting…')
+  try {
+    const identity = await peer.connect()
+    const ids = new Set((await peer.discover()).map((command) => command.id))
+    const missing = ['midi.noteOn', 'ui.list'].filter((id) => !ids.has(id))
+    if (missing.length) state(`Connected to ${identity.name}, but this build lacks ${missing.join(' and ')}; some controls will not work.`)
+    else state(`Connected to ${identity.name} ${identity.version}.`)
+    const { state: transport } = await peer.subscribeState('transport.changed')
+    showTransport(transport)
+    if (transport) $('#tempo').value = Math.round(transport.bpm)
+    enable(true)
+  } catch (error) {
+    state(error.code === 'timeout'
+      ? 'No answer. Check that Accept control from any window is ticked and the input is connected in Harmoneasy, then try again.'
+      : error.message)
+  }
+})
+
+// Keyboard: two octaves from the chosen octave's C.
+const held = new Map()
+function key(offset) {
+  const name = NAMES[offset % 12]
+  const button = document.createElement('button')
+  button.type = 'button'
+  button.className = name.includes('♯') ? 'black' : ''
+  button.textContent = name.includes('♯') ? '' : `${name}${Math.floor(offset / 12) ? '′' : ''}`
+  button.setAttribute('aria-label', `${name} ${Math.floor(offset / 12) + Number($('#octave').value)}`)
+  const start = (event) => {
+    event.preventDefault()
+    if (held.has(button)) return
+    const note = (Number($('#octave').value) + 1) * 12 + offset
+    held.set(button, { note, channel: channel() })
+    button.setAttribute('aria-pressed', 'true')
+    void send('midi.noteOn', { note, velocity: Number($('#velocity').value), channel: channel() })
+  }
+  const stop = () => {
+    const note = held.get(button)
+    if (!note) return
+    held.delete(button)
+    button.setAttribute('aria-pressed', 'false')
+    void send('midi.noteOff', note)
+  }
+  button.addEventListener(EVENT_POINTER_DOWN, start)
+  for (const type of [EVENT_POINTER_UP, EVENT_POINTER_LEAVE, EVENT_POINTER_CANCEL]) button.addEventListener(type, stop)
+  return button
+}
+$('#keys').append(...Array.from({ length: 25 }, (_, offset) => key(offset)))
+
+$('#bend').addEventListener(EVENT_INPUT, () => void send('midi.pitchBend', { value: Number($('#bend').value), channel: channel() }))
+// Pitch bend springs back to the centre when released.
+$('#bend').addEventListener(EVENT_CHANGE, () => { $('#bend').value = 0; void send('midi.pitchBend', { value: 0, channel: channel() }) })
+$('#modulation').addEventListener(EVENT_INPUT, () => void send('midi.controlChange', { controller: 1, value: Number($('#modulation').value), channel: channel() }))
+$('#pressure').addEventListener(EVENT_INPUT, () => void send('midi.channelAftertouch', { pressure: Number($('#pressure').value), channel: channel() }))
+
+for (const button of document.querySelectorAll('[data-command]')) {
+  button.addEventListener(EVENT_CLICK, () => void send(button.dataset.command))
+}
+$('#set-tempo').addEventListener(EVENT_CLICK, () => void send('transport.setTempo', { bpm: Number($('#tempo').value) }))
+
+// Interface controls, discovered from Harmoneasy's command palette.
+async function listControls() {
+  if (!peer) return
+  try {
+    const query = $('#query').value.trim()
+    const controls = await peer.call('ui.list', query ? { query } : {})
+    $('#controls').replaceChildren(...controls.slice(0, 200).map(row))
+    state(`${controls.length} controls${controls.length > 200 ? '; showing the first 200, search to narrow' : ''}.`)
+  } catch (error) { state(error.message) }
+}
+function row(control) {
+  const item = document.createElement('li')
+  const text = document.createElement('span')
+  text.className = 'grow'
+  text.innerHTML = '<strong></strong> <small></small>'
+  text.querySelector('strong').textContent = control.label
+  text.querySelector('small').textContent = `${control.context || 'Application'} · ${control.value}`
+  item.append(text)
+  const run = async (command, args) => {
+    try { await peer.call(command, args); await listControls() } catch (error) { state(`${control.label}: ${error.message}`) }
+  }
+  if (control.kind === 'action' || control.kind === 'toggle') {
+    const press = document.createElement('button')
+    press.textContent = control.kind === 'toggle' ? 'Toggle' : 'Press'
+    press.addEventListener(EVENT_CLICK, () => run('ui.activate', { id: control.id }))
+    item.append(press)
+  } else {
+    let editor
+    if (control.kind === 'choice') {
+      editor = document.createElement('select')
+      for (const option of control.options) editor.append(new Option(option, option, false, option === control.value))
+    } else {
+      editor = document.createElement('input')
+      editor.type = control.kind === 'number' ? 'number' : 'text'
+      editor.value = control.value
+      for (const bound of ['min', 'max', 'step']) if (control[bound] !== undefined) editor[bound] = control[bound]
+    }
+    editor.setAttribute('aria-label', control.label)
+    const set = document.createElement('button')
+    set.textContent = 'Set'
+    set.addEventListener(EVENT_CLICK, () => run('ui.setValue', { id: control.id, value: String(editor.value) }))
+    item.append(editor, set)
+  }
+  return item
+}
+$('#list').addEventListener(EVENT_CLICK, listControls)
+$('#query').addEventListener(EVENT_CHANGE, listControls)
+
+window.addEventListener(EVENT_PAGE_HIDE, () => {
+  // Release anything still held, then close.
+  for (const note of held.values()) void send('midi.noteOff', note)
+  peer?.close()
+})
+</script>
+</html>
