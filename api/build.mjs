@@ -13,6 +13,11 @@ const pkg = JSON.parse(await readFile(join(root, "package.json"), "utf8"))
 const out = join(root, site.output)
 // Build inputs are not published.
 const PRIVATE = new Set(["build.mjs", "site.json"])
+const MERMAID = `<script type="module">
+import mermaid from "https://cdn.jsdelivr.net/npm/mermaid@11.4.1/dist/mermaid.esm.min.mjs"
+mermaid.initialize({ startOnLoad: true, theme: matchMedia("(prefers-color-scheme: dark)").matches ? "dark" : "default" })
+</script>
+`
 
 try {
 	await access(join(root, "dist", "index.js"))
@@ -42,6 +47,10 @@ function markdown() {
 				const html = this.parser.parseInline(tokens)
 				const id = slug(html)
 				return `<h${depth} id="${id}"><a class="anchor" href="#${id}" aria-hidden="true">#</a>${html}</h${depth}>\n`
+			},
+			// Diagrams render in the browser, as they do on GitHub.
+			code({ text, lang }) {
+				return lang === "mermaid" ? `<pre class="mermaid">${escape(text)}</pre>\n` : false
 			}
 		},
 		walkTokens(token) {
@@ -82,7 +91,7 @@ function page({ title, description, body, output }) {
 ${body}
 </main>
 <footer class="site-footer">audiobus-protocol ${escape(pkg.version)} · wire protocol version 1 · <a href="${site.repository}">Source</a></footer>
-</body>
+${body.includes('class="mermaid"') ? MERMAID : ""}</body>
 </html>
 `
 }

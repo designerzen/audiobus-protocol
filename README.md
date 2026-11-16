@@ -1,36 +1,47 @@
 # audioBus Protocol
 
-Discover and control music applications over a small, symmetric protocol inspired by [WebMidiLink](https://www.g200kg.com/en/docs/webmidilink/spec.html). Each application can expose commands and call the other application's commands. MIDI retains the original WebMidiLink wire format. This is a new protocol, not an MCP server.
+Let web music applications **find each other's commands, call them, follow each other's state and exchange MIDI**. Both sides run the same peer over `postMessage`, so either one can control the other. Plain [WebMidiLink](https://www.g200kg.com/en/docs/webmidilink/spec.html) `midi,…` messages still work unchanged.
 
-**[Documentation and live demos](https://designerzen.github.io/audiobus-protocol/)**
+**[Documentation and live demos](https://designerzen.github.io/audiobus-protocol/)** · **[Remote control Harmoneasy](https://designerzen.github.io/harmoneasy/protocol-remote.html)** · [Wire protocol](docs/protocol.md) · [Integration guide](docs/integration.md)
 
-The package has no runtime dependencies. Application state and command handlers belong to the host; the protocol does not depend on audioBus, Harmoneasy, OpenDAW, React, or a DOM.
+- No runtime dependencies, no DOM required. Works in any window, iframe, popup or custom transport.
+- Commands are described with JSON schemas, so a remote can build forms and a command palette can share the same handlers.
+- MIDI 1 bytes, negotiated MIDI 2 UMP, discoverable properties, retained state and pairing codes.
 
-## Develop and run
-
-Requires Node.js 22+ and npm. From this repository:
-
-```sh
-npm install
-npm test
-npm run example
-npm run example:midi2
-npm run build:site   # GitHub Pages site in _site/
+```mermaid
+flowchart LR
+    subgraph A["Application A (e.g. a controller)"]
+        PA[Peer] --- RA[("CommandRegistry<br/>optional")]
+    end
+    subgraph B["Application B (e.g. Harmoneasy)"]
+        PB[Peer] --- RB[("CommandRegistry<br/>transport · presets · midi …")]
+    end
+    PA -- "initialize · commands.call · subscribe<br/>midi,… · UMP" --> PB
+    PB -- "results · events (transport.changed …)<br/>midi,… · UMP" --> PA
 ```
 
-`npm run build` produces JavaScript and TypeScript declarations in `dist/`. Install directly from GitHub with `npm install git+https://github.com/designerzen/audiobus-protocol.git` (pin a commit for reproducible builds), install a local checkout with `npm install ../audiobus-protocol`, or use a workspace dependency. The built `dist/` is committed, so Git installs work even with install scripts disabled (`--ignore-scripts`); run `npm run build` and commit `dist/` with any source change. CI fails if it is out of date. This repository is not yet a published npm release.
+## Install
 
-## Expose a command
+```sh
+npm install git+https://github.com/designerzen/audiobus-protocol.git   # pin a commit for reproducible builds
+```
+
+Or `npm install ../audiobus-protocol` for a local checkout. The built `dist/` is committed, so Git installs work with install scripts disabled (`--ignore-scripts`). There is no npm release yet.
+
+## Quick start
+
+**1. The application being controlled** registers its commands and listens:
 
 ```js
 import { CommandRegistry, Peer, windowTransport } from 'audiobus-protocol'
 
 const commands = new CommandRegistry()
 let bpm = 120
+
 commands.register({
   id: 'transport.setTempo',
   title: 'Set tempo',
-  description: 'Set the application tempo in beats per minute',
+  description: 'Tempo in beats per minute',
   inputSchema: {
     type: 'object',
     properties: { bpm: { type: 'number', minimum: 10, maximum: 303 } },
@@ -43,48 +54,254 @@ commands.register({
     return { bpm }
   }
 })
+// Subscribers get the current state together with their subscription
+commands.retain('transport.changed', () => ({ bpm }))
 
-// remoteWindow is a specific iframe.contentWindow or popup returned by window.open.
-// Choose its exact origin from trusted application configuration.
-const peer = new Peer(windowTransport(remoteWindow, 'https://other-app.example'), {
-  identity: { name: 'My music application', version: '1.0' },
+// The controller's window and its exact origin: here, the page that embeds us
+const peer = new Peer(windowTransport(window.parent, 'https://controller.example'), {
+  identity: { name: 'My synth', version: '1.0' },
   registry: commands,
-  onEvent: (topic, data) => console.log(topic, data),
-  onMidi: bytes => console.log('MIDI', bytes)
+  onMidi: bytes => synth.play(bytes)
 })
-await peer.connect() // Call after the other application's listener is installed.
-console.log(await peer.list())
-await peer.subscribe('transport.changed')
-await peer.call('transport.setTempo', { bpm: 128 })
-// On teardown: peer.close() tells the other side, which releases notes and subscriptions
 ```
 
-Peer options also take `onClosed()`, called when the other side closes, and `onError(error, context)` for failures that produce no reply, such as a throwing `onMidi` or an event too large to send. `peer.isLocked` reports a pairing lockout, `registry.has(id)` tests command ownership without building descriptors, and `assertPeerOrigin(origin)` validates an origin the way `windowTransport` does.
+**2. The controller** connects, discovers and calls:
 
-The receiving peer can call back after the same handshake; it does not need a second connection. `CommandRegistry.list()` and `.call()` also work locally, so a command palette and remote clients can share handlers and validation. Command IDs are stable API names, not translated labels or DOM selectors.
+```js
+import { Peer, windowTransport } from 'audiobus-protocol'
 
-## Examples and integration
+const frame = document.querySelector('iframe')
+const synth = new Peer(windowTransport(frame.contentWindow, new URL(frame.src).origin), {
+  identity: { name: 'My controller', version: '1.0' },
+  onEvent: (topic, data) => console.log(topic, data)
+})
 
-- [Two in-memory peers](examples/peers.js): runnable connect → discover → read → subscribe → set → notification exchange, representing Harmoneasy and an OpenDAW integration.
-- [MIDI 2 and properties](examples/midi2.js): negotiated UMP, exact high-resolution words, a versioned capability bundle, and property discovery/write/subscription.
-- [Two browser windows](examples/browser.html): build first, then serve this repository with your preferred static HTTP server and open `/examples/browser.html`. It requires HTTP(S), not `file://`. This example uses an explicit readiness message before initialization.
-- [Harmoneasy remote control](api/remote-control.html): control Harmoneasy without pairing, from notes and pitch bend to any control in its command palette. See [Control Harmoneasy](docs/integration.md#control-harmoneasy).
-- [Pairing codes and retained state](examples/pairing.html): a popup that requires a pairing code, and a controller that receives tempo state with its subscription.
-- [Example console](api/console.html): runs the in-memory examples in a browser and shows their output.
-- [MIDI destination with optional sound](examples/receiver.html): a popup receiver for Harmoneasy's Protocol Output, with explicit origin pairing, tempo commands, panic, MIDI logging, and Level 1 patches.
-- [Wire protocol](docs/protocol.md): framing, lifecycle, methods, errors, and compatibility.
-- [Application integration](docs/integration.md): audioBus Input, Output and command palette patterns.
+await synth.connect()                                   // retried every 250 ms until the timeout
+const commands = await synth.discover()                 // [{id, title, inputSchema, available}, …]
+const { state } = await synth.subscribeState('transport.changed')  // {bpm: 120}, then events
+await synth.call('transport.setTempo', { bpm: 128 })    // validated against the schema remotely
+synth.sendMidi([0x90, 60, 100])                         // note on, plain WebMidiLink
+synth.sendMidi([0x80, 60, 0])
+synth.close()                                           // the other side releases held notes
+```
 
-Only explicitly paired peers should receive a transport. `windowTransport` requires an exact origin and checks both `event.source` and `event.origin`; it never accepts a wildcard. Origin validation establishes which application is connected, not which commands it should be allowed to execute: expose a registry appropriate to that connection. When the peer window was not chosen by your application, such as `window.opener`, require a pairing code shown to the person (`generatePairingCode()`, `requirePairingCode`, `pairingCode`); see [pairing codes](docs/protocol.md#pairing-codes-sdk-03). Hosts that let people opt in to control without pairing should follow [accepting unpaired senders](docs/protocol.md#accepting-unpaired-senders). Commands requiring a browser user gesture may still require local interaction.
+Neither side is a server: once connected, the synth can `call()` the controller's commands too, over the same connection.
 
-## Initial scope
+## A session, step by step
 
-Package 0.3 adds pairing codes for peers whose window was not chosen by the application, and retained topic state: `registry.retain(topic, read)` lets `peer.subscribeState(topic)` receive current state atomically with the subscription. Wire protocol version 1 is unchanged and older peers interoperate unless a pairing code is required.
+```mermaid
+sequenceDiagram
+    participant C as Controller
+    participant S as Synth
+    C->>S: initialize {protocolVersion: 1, name, pairingCode?}
+    S-->>C: {name, capabilities: [commands, events, ump …], maxMessageLength}
+    C->>S: commands.list
+    S-->>C: descriptors with JSON schemas
+    C->>S: subscribe "transport.changed"
+    S-->>C: {retained: true, state: {bpm: 120}}
+    C->>S: commands.call transport.setTempo {bpm: 128}
+    S-->>C: {bpm: 128}
+    S--)C: event transport.changed {bpm: 128}
+    C-)S: midi,90,3c,64
+    C-)S: bye
+    Note over S: forget subscriptions, release notes held for C
+```
 
-Package 0.2 adds negotiated UMP, discoverable scalar properties and application-defined capability bundles while retaining wire protocol version 1 and older peers. Opt in with `ump:true` on both Peers and provide `onUmp` at receiving endpoints. `sendUmp()` sends one packet as unsigned 32-bit words, preserving MIDI 2 precision; it rejects unless both peers advertised UMP. Byte MIDI remains unchanged. No implicit MIDI 1 conversion takes place in the SDK.
+On the wire every control message is one string, `control,<request|response|event|bye>,<URI-encoded JSON>`, alongside the original `midi,90,3c,64` messages. Details are in the [wire protocol](docs/protocol.md).
 
-`registry.registerProperty()` describes a scalar using its schema, title, unit, getter and optional setter. Clients use `peer.listProperties()`, `getProperty(id)`, and `setProperty(id,value)`. Subscribe to `properties.changed` for `{id,value}` updates and `properties.listChanged` for metadata changes. Hosts call `registry.notifyProperty(id)` after local state changes. Writes validate the value, recheck dynamic writability, invoke the host setter, read back actual state and publish it. `registerBundle()` groups required commands and properties under a namespaced ID and integer version; clients use `peer.listBundles()`.
+## Recipes
 
-These properties and bundles are inspired by MIDI-CI Property Exchange and Profiles; they are application protocol features, not a MIDI-CI implementation or standardized MIDI Profiles. Actual MIDI-CI framing, identity, chunking and resource adapters are not implemented. UMP timing messages can be transported unchanged, but are not interpreted as browser scheduling instructions; there is no clock synchronization or sample-accurate scheduler.
+### Receive MIDI and state
 
-The original commands, scalar argument validation, exact-topic subscriptions, timeouts and WebMidiLink patch exchange remain available. `peer.discover()` validates command metadata; `peer.list()` returns raw JSON. Initialization retries every 250 ms until its timeout; other requests are never retried. Graph edits, device parameters, presets and transport commands belong to the host. No network server, persistence or actual OpenDAW integration is included. A timed-out write or command may already have executed.
+```js
+const peer = new Peer(transport, {
+  identity: { name: 'Visualiser', version: '1' },
+  onMidi: bytes => draw(bytes),                     // Uint8Array, one complete message
+  onEvent: (topic, data) => topic === 'transport.changed' && setTempo(data.bpm),
+  onClosed: () => reconnectLater(),                 // the other side closed or reloaded
+  onError: (error, context) => console.warn(context, error)
+})
+```
+
+### Reconnect when the other application reloads
+
+A reload starts a new session. Make a new `Peer` each time, and keep trying until the other side is listening:
+
+```js
+async function connect() {
+  for (;;) {
+    const attempt = new Peer(windowTransport(frame.contentWindow, origin), {
+      identity, timeoutMs: 4000, onClosed: () => connect()
+    })
+    try { await attempt.connect(); return attempt }
+    catch { attempt.close(); await new Promise(resolve => setTimeout(resolve, 1500)) }
+  }
+}
+frame.addEventListener('load', async () => { peer = await connect() })
+```
+
+### Properties: discoverable values
+
+```js
+commands.registerProperty({
+  id: 'transport.tempo', title: 'Tempo', description: 'Internal tempo', unit: 'BPM',
+  schema: { type: 'number', minimum: 10, maximum: 303 },
+  get: () => bpm,
+  set: value => { bpm = value },
+  writable: () => clock.isLocal
+})
+commands.notifyProperty('transport.tempo')        // after a local change
+
+// The other side
+await peer.listProperties()                       // [{id, title, unit, schema, readOnly, …}]
+await peer.subscribe('properties.changed')        // events of {id, value}
+await peer.setProperty('transport.tempo', 128)    // validated, written, read back
+```
+
+### MIDI 2 (UMP)
+
+Both peers opt in. `sendUmp()` sends exact 32-bit words and throws unless both sides advertised `ump`:
+
+```js
+const peer = new Peer(transport, { identity, ump: true, onUmp: words => play(words) })
+await peer.connect()
+if (peer.supports('ump')) {
+  peer.sendUmp([0x40904000, 0xffff0000])          // MIDI 2 note on, 16-bit velocity
+}
+```
+
+The SDK never converts between UMP and MIDI 1. That is up to the application.
+
+### Pairing codes for windows you did not choose
+
+`windowTransport` proves which window sent a message, not that a person meant to connect. When the peer is `window.opener` or an embedding parent, show a code and require it:
+
+```js
+import { generatePairingCode, formatPairingCode } from 'audiobus-protocol'
+
+// Instrument (opened by someone else)
+const code = generatePairingCode()
+codeLabel.textContent = formatPairingCode(code)  // e.g. ABCD-EFGH
+const peer = new Peer(windowTransport(window.opener, openerOrigin), {
+  identity, registry: commands, requirePairingCode: code,
+  onAuthorized: () => status('Paired')
+})
+
+// Controller (the person types the code it shows)
+const instrument = new Peer(windowTransport(popup, instrumentOrigin), {
+  identity, pairingCode: codeInput.value
+})
+await instrument.connect()
+```
+
+Until the code matches, MIDI and patches are ignored and every request is rejected. Five wrong codes lock the peer until it is replaced.
+
+```mermaid
+sequenceDiagram
+    participant C as Controller
+    participant I as Instrument
+    I->>I: generatePairingCode() → shows ABCD-EFGH
+    Note over C: the person types ABCD-EFGH
+    C->>I: initialize {pairingCode: "ABCD-EFGH"}
+    I-->>C: authorized: commands, MIDI and patches now accepted
+```
+
+## Control Harmoneasy
+
+[Harmoneasy](https://github.com/designerzen/harmoneasy) implements this protocol. Its **audioBus Protocol** input accepts connections from any window that opens or embeds it, and exposes:
+
+| Commands | What they do |
+| --- | --- |
+| `midi.noteOn`, `midi.noteOff`, `midi.pitchBend`, `midi.controlChange`, `midi.programChange`, aftertouch, `midi.allNotesOff` | Play into the input's chain |
+| `transport.get`, `transport.start`, `transport.stop`, `transport.setTempo`, `app.panic` | Transport, with retained `transport.changed` state |
+| `presets.list`, `presets.load` | Find and load a preset; the session closes, so reconnect |
+| `ui.list`, `ui.activate`, `ui.setValue` | Press, toggle or set any control the command palette can reach |
+
+```js
+const harmoneasy = document.querySelector('iframe')
+harmoneasy.src = 'https://designerzen.github.io/harmoneasy/presets/protocol/step-song/'
+const peer = new Peer(windowTransport(harmoneasy.contentWindow, 'https://designerzen.github.io'), {
+  identity: { name: 'My controller', version: '1' },
+  timeoutMs: 15000,                                 // Harmoneasy listens once Start is pressed
+  onMidi: bytes => console.log('Harmoneasy played', bytes)
+})
+await peer.connect()
+await peer.call('midi.noteOn', { note: 60, velocity: 100 })  // plays the song's next note
+const [reverb] = await peer.call('ui.list', { query: 'reverb' })
+await peer.call('ui.activate', { id: reverb.id })
+```
+
+Try it live:
+
+- **[Harmoneasy remote control](https://designerzen.github.io/harmoneasy/protocol-remote.html)**: notes, drums, controllers, transport, presets, and a button for every command, property and interface control. In Harmoneasy itself, the **Remote** toolbar button opens it.
+- **[Step through a song](https://designerzen.github.io/harmoneasy/presets/protocol/step-song/)**: any key, the pad, or a remote note plays the next note, and the note is sent back to connected pages.
+- [SDK remote control demo](api/remote-control.html): the same idea in a single file, built on this repository's `dist/`.
+
+See [Control Harmoneasy](docs/integration.md#control-harmoneasy) for the full reference.
+
+## Demos and examples
+
+| Demo | Shows |
+| --- | --- |
+| [Two browser windows](examples/browser.html) | Symmetric commands between a page and a popup |
+| [Pairing codes and retained state](examples/pairing.html) | A popup that requires a code, and state delivered with the subscription |
+| [MIDI destination](examples/receiver.html) | A receiver for Harmoneasy's Protocol Output: notes, UMP, tempo, panic, patches, optional sound |
+| [In-memory peers](examples/peers.js) · [console](api/console.html?example=peers) | Connect, discover, read, subscribe, set, in Node |
+| [MIDI 2 and properties](examples/midi2.js) · [console](api/console.html?example=midi2) | UMP, a capability bundle, and property writes |
+
+The window demos need HTTP(S), not `file://`. Run `npm run build:site` and serve `_site/`, or open the [hosted demos](https://designerzen.github.io/audiobus-protocol/demos.html).
+
+## API at a glance
+
+| `Peer` | |
+| --- | --- |
+| `connect()` | Initialize the other side; resolves with its identity and capabilities |
+| `discover()` / `list()` | Command descriptors (validated / raw JSON) |
+| `call(id, args)` | Run a remote command |
+| `subscribe(topic)` / `subscribeState(topic)` / `unsubscribe(topic)` | Events, optionally with the current retained state |
+| `listProperties()` / `getProperty(id)` / `setProperty(id, value)` / `listBundles()` | Properties and capability bundles |
+| `sendMidi(bytes)` / `sendUmp(words)` / `supports('ump')` | MIDI 1 and MIDI 2 |
+| `requestPatch()` / `setPatch(text)` | WebMidiLink Level 1 patches |
+| `close({ notify })` | Tell the other side (`bye`) and remove listeners |
+
+| `CommandRegistry` | |
+| --- | --- |
+| `register(command)` → `unregister` | Command with `inputSchema`, optional `available()` and `execute(args)` |
+| `call(id, args)` / `list()` / `has(id)` | Use the same commands locally, such as from a command palette |
+| `publish(topic, data)` / `retain(topic, read)` | Events, and state handed to new subscribers |
+| `registerProperty(property)` / `notifyProperty(id)` | Scalar properties with schema, unit, getter and setter |
+| `registerBundle({ id, version, commands, properties })` | Name a versioned set of commands and properties |
+
+Throw `new ProtocolError('invalid_params', message)` from `execute` to reject a call with a reason.
+
+## Security
+
+- `windowTransport(target, origin)` takes a specific window and an exact origin. It checks `event.source` and `event.origin` and never uses `*`.
+- An origin tells you who is connected, not what they may do. Give each connection a registry that suits it.
+- Use pairing codes when your application did not choose the peer window. To accept control from any window, follow [accepting unpaired senders](docs/protocol.md#accepting-unpaired-senders) and keep it off by default.
+- Messages over 262,144 characters are rejected, a peer runs at most 32 requests at once, and replies are matched to a per-Peer token, so an earlier session cannot answer a new one.
+- A timed-out command may still have run. Commands that need a browser gesture, such as starting audio, still need a click.
+
+## Develop
+
+Requires Node.js 22+.
+
+```sh
+npm install
+npm test              # build and run the tests
+npm run example       # in-memory peers
+npm run example:midi2
+npm run build:site    # GitHub Pages site in _site/
+```
+
+Commit `dist/` with any source change (`npm run build`); CI fails if it is out of date.
+
+## Versions
+
+| Package | Adds |
+| --- | --- |
+| 0.4 (on `main`) | Per-Peer request tokens, `bye` on `close()`, `onClosed` and `onError`, request limits |
+| 0.3 | Pairing codes, retained subscription state (`retain`, `subscribeState`) |
+| 0.2 | Negotiated UMP, properties, capability bundles |
+
+All of them speak wire protocol version 1, and older peers interoperate unless a pairing code is required. Properties and bundles are inspired by MIDI-CI Property Exchange and Profiles but are not MIDI-CI. There is no clock synchronisation, network server or persistence.
