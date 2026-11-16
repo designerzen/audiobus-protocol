@@ -11,6 +11,10 @@ import {
   formatPairingCode,
   normalizePairingCode,
   MAX_PAIRING_ATTEMPTS,
+  MAX_CONCURRENT_REQUESTS,
+  assertPeerOrigin,
+  decodeControl,
+  isInitializeRequest,
 } from "../dist/index.js";
 
 function pair(options = {}, remote = {}) {
@@ -403,6 +407,7 @@ test("repeated incorrect pairing codes lock the peer until it is replaced", asyn
     }
     await assert.rejects(attempt("ABCD2345"), { message: /Too many incorrect pairing codes/ });
     assert.equal(p.b.isAuthorized, false);
+    assert.equal(p.b.isLocked, true);
   } finally {
     peers.forEach((peer) => peer.close());
     p.close();
@@ -530,4 +535,97 @@ test("an unauthorized peer receives no events and gets unauthorized before initi
   } finally {
     p.close();
   }
+});
+
+test("request IDs carry a per-peer token so a stale reply cannot resolve a new request", async () => {
+  let finish;
+  const registry = new CommandRegistry();
+  registry.register({
+    id: "slow",
+    title: "Slow",
+    description: "",
+    inputSchema: EMPTY_SCHEMA,
+    execute: () => new Promise((resolve) => (finish = resolve)),
+  });
+  const p = pair({}, { registry });
+  await p.a.connect();
+  const stale = p.a.call("slow");
+  p.a.close({ notify: false });
+  await assert.rejects(stale, { code: "closed" });
+  const next = new Peer(p.transports[0], { identity: { name: "Next", version: "1" }, timeoutMs: 100 });
+  await next.connect();
+  const fresh = next.call("missing");
+  finish("OLD SESSION RESULT");
+  await assert.rejects(fresh, { code: "unknown_command" });
+  next.close();
+  p.close();
+});
+test("closing a peer tells the remote, which releases subscriptions and reports it", async () => {
+  const closed = [];
+  const p = pair({}, { onClosed: () => closed.push("b") });
+  await p.a.connect();
+  await p.a.subscribe("transport.changed");
+  assert.equal(p.b.isInitialized, true);
+  p.a.close();
+  await new Promise((resolve) => setTimeout(resolve, 5));
+  assert.deepEqual(closed, ["b"]);
+  assert.equal(p.b.isInitialized, false);
+  const sent = [];
+  p.transports[1].send = (message) => sent.push(message);
+  p.b.registry.publish("transport.changed", { bpm: 1 });
+  assert.deepEqual(sent, []);
+  p.close();
+});
+test("an event that cannot be sent is reported and never stops other listeners", async () => {
+  const registry = new CommandRegistry();
+  const errors = [];
+  const p = pair({}, { registry, onError: (error, context) => errors.push([error.code, context]) });
+  await p.a.connect();
+  await p.a.subscribe("big");
+  const seen = [];
+  registry.observe((topic) => seen.push(topic));
+  registry.publish("big", "x".repeat(300000));
+  assert.deepEqual(seen, ["big"]);
+  assert.deepEqual(errors, [["message_too_large", "event big"]]);
+  p.close();
+});
+test("a peer bounds the requests it executes at once", async () => {
+  const registry = new CommandRegistry();
+  const waiting = [];
+  registry.register({
+    id: "wait",
+    title: "Wait",
+    description: "",
+    inputSchema: EMPTY_SCHEMA,
+    execute: () => new Promise((resolve) => waiting.push(resolve)),
+  });
+  const p = pair({}, { registry });
+  await p.a.connect();
+  const calls = Array.from({ length: MAX_CONCURRENT_REQUESTS + 1 }, () => p.a.call("wait"));
+  await assert.rejects(calls.at(-1), { code: "limit_exceeded" });
+  assert.equal(waiting.length, MAX_CONCURRENT_REQUESTS);
+  waiting.forEach((resolve) => resolve(null));
+  assert.deepEqual(await Promise.all(calls.slice(0, -1)), calls.slice(0, -1).map(() => null));
+  // Finished requests free their slots.
+  const again = p.a.call("wait");
+  await new Promise((resolve) => setTimeout(resolve, 1));
+  assert.equal(waiting.length, MAX_CONCURRENT_REQUESTS + 1);
+  waiting.at(-1)(null);
+  assert.equal(await again, null);
+  p.close();
+});
+test("control helpers and origin assertion", () => {
+  assert.equal(decodeControl("control,request,%7B%22id%22%3A%221%22%2C%22method%22%3A%22initialize%22%7D").kind, "request");
+  assert.equal(isInitializeRequest("control,request,%7B%22id%22%3A%221%22%2C%22method%22%3A%22initialize%22%7D"), true);
+  assert.equal(isInitializeRequest("control,request,%7B%22id%22%3A%221%22%2C%22method%22%3A%22commands.list%22%7D"), false);
+  assert.equal(decodeControl("control,request,%bad"), undefined);
+  assert.equal(decodeControl("midi,90,3c,64"), undefined);
+  assertPeerOrigin("https://app.example");
+  for (const origin of ["*", "null", "https://app.example/", "app.example", ""]) {
+    assert.throws(() => assertPeerOrigin(origin), /exact, non-opaque/);
+  }
+  const registry = new CommandRegistry();
+  registry.register({ id: "x", title: "x", description: "", inputSchema: EMPTY_SCHEMA, execute: () => null });
+  assert.equal(registry.has("x"), true);
+  assert.equal(registry.has("y"), false);
 });

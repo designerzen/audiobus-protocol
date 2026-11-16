@@ -56,8 +56,10 @@ await peer.connect() // Call after the other application's listener is installed
 console.log(await peer.list())
 await peer.subscribe('transport.changed')
 await peer.call('transport.setTempo', { bpm: 128 })
-// On teardown: peer.close()
+// On teardown: peer.close() tells the other side, which releases notes and subscriptions
 ```
+
+Peer options also take `onClosed()`, called when the other side closes, and `onError(error, context)` for failures that produce no reply, such as a throwing `onMidi` or an event too large to send. `peer.isLocked` reports a pairing lockout, `registry.has(id)` tests command ownership without building descriptors, and `assertPeerOrigin(origin)` validates an origin the way `windowTransport` does.
 
 The receiving peer can call back after the same handshake; it does not need a second connection. `CommandRegistry.list()` and `.call()` also work locally, so a command palette and remote clients can share handlers and validation. Command IDs are stable API names, not translated labels or DOM selectors.
 

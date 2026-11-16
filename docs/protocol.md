@@ -4,7 +4,7 @@
 
 Each transport message is a single string. The default browser transport uses `window.postMessage`; custom transports implement `send(string)` and `listen(callback) → unsubscribe`. Transport implementations must isolate one authorized peer and preserve message order. A `Peer` owns its listener and subscriptions, not the underlying window.
 
-Control messages are `control,<kind>,<payload>`, where kind is `request`, `response`, or `event` and payload is `encodeURIComponent(JSON.stringify(body))`. Decode exactly once. Encoded payloads contain no literal commas. Maximum total message length is 262,144 JavaScript UTF-16 code units; larger messages are rejected on send and ignored on receipt. Unknown prefixes, malformed frames, and malformed responses are ignored. Control framing is an audioBus extension, not part of WebMidiLink.
+Control messages are `control,<kind>,<payload>`, where kind is `request`, `response`, `event` or `bye` and payload is `encodeURIComponent(JSON.stringify(body))`. Decode exactly once. Encoded payloads contain no literal commas. Maximum total message length is 262,144 JavaScript UTF-16 code units; larger messages are rejected on send and ignored on receipt. Unknown prefixes, malformed frames, and malformed responses are ignored. Control framing is an audioBus extension, not part of WebMidiLink.
 
 Decoded examples:
 
@@ -17,13 +17,13 @@ Decoded examples:
 {"topic":"transport.changed","data":{"bpm":128}}
 ```
 
-IDs are strings, unique among requests pending in the same direction. Responses echo IDs and have exactly one of `result` or `error`. Results and event data must be JSON values; return `null` for commands with no result. Internal exceptions become `internal_error` without exposing exception text. A peer must not send functions, circular objects, undefined, non-finite numbers, or other non-JSON results.
+IDs are strings, unique among requests pending in the same direction. The SDK prefixes each ID with a random per-Peer token (`3f9a1c7b2d40-2`), so a reply to a request from an earlier Peer on the same transport can never resolve a request from its replacement. Responses echo IDs and have exactly one of `result` or `error`. Results and event data must be JSON values; return `null` for commands with no result. Internal exceptions become `internal_error` without exposing exception text. A peer must not send functions, circular objects, undefined, non-finite numbers, or other non-JSON results.
 
 ## Lifecycle
 
 Install listeners on both sides, then call `connect()` on either side after application readiness. It sends `initialize`. Both sides must agree on the exact integer protocol version; version 1 rejects other versions with `unsupported_version`. The response returns application identity, capabilities, and the message limit. Successful initialization enables control in both directions. Application versions do not determine protocol compatibility. Repeated initialization of the same connection is allowed and does not clear subscriptions.
 
-No automatic window discovery or acceptance of arbitrary senders takes place. The host explicitly provides the remote window and trusted origin. A reload creates a new application session: close the old peer, release its input notes, create a new peer and initialize again. Close rejects outstanding local requests and removes local listeners and subscriptions. Close has no wire acknowledgement and cannot cancel a command already executing remotely. Remote disappearance is detected through request timeouts or application lifecycle signals, not heartbeats.
+No automatic window discovery or acceptance of arbitrary senders takes place. The host explicitly provides the remote window and trusted origin. A reload creates a new application session: close the old peer, release its input notes, create a new peer and initialize again. Close rejects outstanding local requests and removes local listeners and subscriptions. Since SDK 0.4, `close()` also sends `control,bye,%7B%7D` to an initialized peer, unless called with `{ notify: false }`; the receiver forgets the sender's subscriptions, fails its own pending requests with `closed`, and calls `onClosed`, where a host releases notes held for that connection. Close has no wire acknowledgement and cannot cancel a command already executing remotely. Remote disappearance is detected through request timeouts or application lifecycle signals, not heartbeats.
 
 ### Pairing codes (SDK 0.3)
 
@@ -39,7 +39,10 @@ A host may let a person opt in to control from any window without pairing, as Ha
 - ignore messages without a source window or with an empty or `null` origin, since replies could only be broadcast with `*`;
 - start a fresh session, releasing its held notes, when a known window's origin changes;
 - cap the number of sessions and free the slots of closed windows;
-- route each session's MIDI through its own note tracking, so closing one session releases only its notes.
+- route each session's MIDI through its own note tracking, so closing one session releases only its notes;
+- allot a session only to an `initialize` request (`isInitializeRequest(message)`), never to stray MIDI or malformed frames, and drop sessions that never complete initialization, so junk traffic cannot occupy every slot;
+- end the session on `bye`, through `onClosed`;
+- run one listener for the whole application when several Inputs accept unpaired control, so each application command executes once per request.
 
 The sender connects with an ordinary `windowTransport` to the host window and its origin; no pairing code is involved.
 
@@ -56,6 +59,8 @@ The sender connects with an ordinary `windowTransport` to the host window and it
 Descriptors contain `id`, `title`, `description`, `inputSchema`, and current `available`. Availability is checked again at execution. The input schema supports object properties of type string, boolean, finite number, or integer; optional enum, numeric minimum/maximum, required properties, and `additionalProperties:false`. This is a bounded JSON Schema subset, not a complete JSON Schema validator. Nested objects and arrays as command arguments are reserved for a later version. Results and events may contain arbitrary JSON trees.
 
 Topics are exact strings of 1–200 characters, with at most 128 subscriptions per connection. Repeated subscriptions are idempotent; there are no wildcards. Hosts may retain a topic with `registry.retain(topic, read)`; the subscribe result then includes `state`, read synchronously and sent in the same task as the subscription is recorded. Every later change arrives as an event after that response, so clients apply the state and then events in arrival order. `peer.subscribeState(topic)` returns `{retained, state}`. A subscription whose state would exceed the message limit is rejected with `message_too_large` and not recorded. Peers advertise this with the `retained` capability; for topics without a retained reader, subscribe then read current state. State events can arrive before the response to the call that triggered them. `commands.changed` is published when commands are registered or removed; hosts should publish it when dynamic availability changes. Subscribe/list again to refresh discovery.
+
+A peer executes at most `MAX_CONCURRENT_REQUESTS` (32) requests at once and answers further ones with `limit_exceeded` until some complete. Failures that produce no reply, such as malformed frames, throwing application callbacks and events that cannot be sent, go to the optional `onError(error, context)` hook; an event that cannot be sent to one peer never stops the registry notifying its other listeners.
 
 Error codes: `invalid_params`, `invalid_result`, `unknown_method`, `unknown_command`, `unavailable`, `unsupported_version`, `not_initialized`, `limit_exceeded`, `message_too_large`, `internal_error`; `unauthorized` (pairing code missing, incorrect or locked out); SDK-local errors also include `timeout`, `closed`, and `invalid_midi`. The default request timeout is 5 seconds; configure `timeoutMs` per peer. Initialization requests repeat every 250 ms with the same ID until a response or timeout; initialization is idempotent. No other requests are retried. Timeouts do not imply rollback.
 

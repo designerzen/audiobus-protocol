@@ -73,6 +73,8 @@ export declare class CommandRegistry {
     private listeners;
     private retained;
     register(command: Command): () => void;
+    /** True when this registry owns the command, without building descriptors. */
+    has(id: string): boolean;
     list(): CommandDescriptor[];
     call(id: string, params?: unknown): Promise<Json>;
     registerProperty(property: Property): () => void;

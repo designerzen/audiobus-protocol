@@ -179,7 +179,11 @@ function key(offset) {
     button.setAttribute('aria-pressed', 'false')
     void send('midi.noteOff', note)
   }
-  button.addEventListener(EVENT_POINTER_DOWN, start)
+  button.addEventListener(EVENT_POINTER_DOWN, (event) => {
+    // Keep the pointer so a finger sliding off the key still releases the note on lift.
+    try { button.setPointerCapture(event.pointerId) } catch { /* Not all pointers can be captured. */ }
+    start(event)
+  })
   for (const type of [EVENT_POINTER_UP, EVENT_POINTER_LEAVE, EVENT_POINTER_CANCEL]) button.addEventListener(type, stop)
   return button
 }
@@ -245,8 +249,8 @@ $('#list').addEventListener(EVENT_CLICK, listControls)
 $('#query').addEventListener(EVENT_CHANGE, listControls)
 
 window.addEventListener(EVENT_PAGE_HIDE, () => {
-  // Release anything still held, then close.
-  for (const note of held.values()) void send('midi.noteOff', note)
+  // Closing tells Harmoneasy, which releases every note this page still holds.
+  held.clear()
   peer?.close()
 })
 </script>

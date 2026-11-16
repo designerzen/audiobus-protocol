@@ -173,6 +173,10 @@ export class CommandRegistry {
                 this.publish(TOPIC_BUNDLES_CHANGED, null);
         };
     }
+    /** True when this registry owns the command, without building descriptors. */
+    has(id) {
+        return this.commands.has(id);
+    }
     list() {
         return [...this.commands.values()].map(({ execute: _, available, ...descriptor }) => ({
             ...descriptor,

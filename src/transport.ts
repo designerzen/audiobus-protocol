@@ -3,11 +3,21 @@ export interface Transport {
   listen(receive: (message: unknown) => void): () => void;
 }
 const EVENT_MESSAGE = "message";
-/** The host explicitly selects a peer window and an exact origin. */
-export function windowTransport(target: Window, origin: string, host: Window = window): Transport {
-  if (origin === "*" || origin === "null" || new URL(origin).origin !== origin) {
+/** Throws unless `origin` is an exact, non-opaque origin such as `https://app.example`. */
+export function assertPeerOrigin(origin: string): void {
+  let parsed: string | undefined;
+  try {
+    parsed = new URL(origin).origin;
+  } catch {
+    /* Reported below. */
+  }
+  if (origin === "*" || origin === "null" || parsed !== origin) {
     throw new Error("An exact, non-opaque peer origin is required");
   }
+}
+/** The host explicitly selects a peer window and an exact origin. */
+export function windowTransport(target: Window, origin: string, host: Window = window): Transport {
+  assertPeerOrigin(origin);
   return {
     send: (message) => target.postMessage(message, origin),
     listen(receive) {

@@ -6,6 +6,8 @@ export * from "./ump.js";
 export declare const PROTOCOL_VERSION = 1;
 export declare const CONTROL_PREFIX = "control,";
 export declare const MAX_MESSAGE_LENGTH = 262144;
+/** Requests one peer executes at once; further requests fail with `limit_exceeded`. */
+export declare const MAX_CONCURRENT_REQUESTS = 32;
 /** Failed initializations, including retried copies, before a peer stops accepting codes. */
 export declare const MAX_PAIRING_ATTEMPTS = 5;
 /** A random code for a person to copy from one application into the other. */
@@ -14,6 +16,13 @@ export declare function generatePairingCode(length?: number): string;
 export declare function normalizePairingCode(code: string): string;
 /** Groups of four for display, for example `ABCD-EFGH`. */
 export declare function formatPairingCode(code: string): string;
+/** Splits a control envelope into its kind and decoded JSON body; undefined when malformed. */
+export declare function decodeControl(message: string): {
+    kind: string;
+    body: Record<string, unknown>;
+} | undefined;
+/** True for the first message a new connection sends: an `initialize` request. */
+export declare function isInitializeRequest(message: string): boolean;
 export interface Identity {
     name: string;
     version: string;
@@ -40,6 +49,13 @@ export interface PeerOptions {
     requirePairingCode?: string;
     /** Called once the remote peer has presented the required pairing code. */
     onAuthorized?: () => void;
+    /** Called when the remote peer closes its connection; held state should be released. */
+    onClosed?: () => void;
+    /**
+     * Receives failures that would otherwise be dropped: malformed messages, application callbacks
+     * that throw, and events that cannot be sent. Never called for errors returned to the remote.
+     */
+    onError?: (error: unknown, context: string) => void;
 }
 export interface SubscriptionState {
     /** True when the remote provides retained state for the topic. */
@@ -62,13 +78,21 @@ export declare class Peer {
     private authorized;
     private requiredCode?;
     private failedPairings;
+    private readonly token;
+    private handling;
+    private prepared?;
     private unlisten;
     private unobserve;
     constructor(transport: Transport, options: PeerOptions);
+    private report;
     private send;
     get capabilities(): string[];
     /** False until the remote presents the required pairing code; always true without one. */
     get isAuthorized(): boolean;
+    /** True after too many incorrect pairing codes; the peer must be replaced to pair again. */
+    get isLocked(): boolean;
+    /** True once either side has completed initialization and until the connection ends. */
+    get isInitialized(): boolean;
     supports(capability: string): boolean;
     private readCapabilities;
     private requireCapability;
@@ -93,8 +117,17 @@ export declare class Peer {
     unsubscribe(topic: string): Promise<Json>;
     sendMidi(bytes: ArrayLike<number>): void;
     private receive;
+    /** The remote ended the connection: forget its subscriptions and fail its requests. */
+    private endSession;
     private checkPairing;
+    /** Serializes a reply once, keeping it for the send if it fits. */
     private fits;
     private handle;
-    close(): void;
+    /**
+     * Ends the connection. The remote is told, unless `notify` is false, so it can release notes
+     * and subscriptions held for this peer.
+     */
+    close(options?: {
+        notify?: boolean;
+    }): void;
 }

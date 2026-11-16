@@ -6,6 +6,8 @@ export * from "./ump.js";
 export const PROTOCOL_VERSION = 1;
 export const CONTROL_PREFIX = "control,";
 export const MAX_MESSAGE_LENGTH = 262144;
+/** Requests one peer executes at once; further requests fail with `limit_exceeded`. */
+export const MAX_CONCURRENT_REQUESTS = 32;
 /** Failed initializations, including retried copies, before a peer stops accepting codes. */
 export const MAX_PAIRING_ATTEMPTS = 5;
 // 32 symbols without I, O, 0 or 1, so each random byte maps without bias.
@@ -22,6 +24,32 @@ export function normalizePairingCode(code) {
 /** Groups of four for display, for example `ABCD-EFGH`. */
 export function formatPairingCode(code) {
     return normalizePairingCode(code).match(/.{1,4}/g)?.join("-") ?? "";
+}
+/** Random, unguessable prefix so one connection's request IDs never match another's. */
+function requestToken() {
+    return Array.from(crypto.getRandomValues(new Uint8Array(6)), (byte) => byte.toString(16).padStart(2, "0")).join("");
+}
+/** Splits a control envelope into its kind and decoded JSON body; undefined when malformed. */
+export function decodeControl(message) {
+    if (!message.startsWith(CONTROL_PREFIX) || message.length > MAX_MESSAGE_LENGTH)
+        return;
+    const separator = message.indexOf(",", CONTROL_PREFIX.length);
+    if (separator < 0)
+        return;
+    try {
+        const body = JSON.parse(decodeURIComponent(message.slice(separator + 1)));
+        return object(body) ? { kind: message.slice(CONTROL_PREFIX.length, separator), body } : undefined;
+    }
+    catch {
+        return;
+    }
+}
+/** True for the first message a new connection sends: an `initialize` request. */
+export function isInitializeRequest(message) {
+    const control = decodeControl(message);
+    return (control?.kind === "request" &&
+        control.body.method === "initialize" &&
+        typeof control.body.id === "string");
 }
 function sameCode(a, b) {
     let difference = a.length ^ b.length;
@@ -73,6 +101,9 @@ export class Peer {
     authorized;
     requiredCode;
     failedPairings = 0;
+    token = requestToken();
+    handling = 0;
+    prepared;
     unlisten;
     unobserve;
     constructor(transport, options) {
@@ -89,9 +120,24 @@ export class Peer {
             void this.receive(message);
         });
         this.unobserve = this.registry.observe((topic, data) => {
-            if (this.initialized && this.topics.has(topic))
+            if (!this.initialized || !this.topics.has(topic))
+                return;
+            try {
                 this.send("event", { topic, data });
+            }
+            catch (error) {
+                // One peer's failure must not stop the registry notifying its other listeners.
+                this.report(error, `event ${topic}`);
+            }
         });
+    }
+    report(error, context) {
+        try {
+            this.options.onError?.(error, context);
+        }
+        catch {
+            /* An error hook must not fail the caller. */
+        }
     }
     send(kind, body) {
         if (this.closed)
@@ -116,6 +162,14 @@ export class Peer {
     /** False until the remote presents the required pairing code; always true without one. */
     get isAuthorized() {
         return this.authorized;
+    }
+    /** True after too many incorrect pairing codes; the peer must be replaced to pair again. */
+    get isLocked() {
+        return this.failedPairings >= MAX_PAIRING_ATTEMPTS;
+    }
+    /** True once either side has completed initialization and until the connection ends. */
+    get isInitialized() {
+        return this.initialized;
     }
     supports(capability) {
         return (this.initialized &&
@@ -165,7 +219,7 @@ export class Peer {
             return Promise.reject(new ProtocolError("closed", "Peer is closed"));
         if (!this.initialized && method !== "initialize")
             return Promise.reject(new ProtocolError("not_initialized", "Connect first"));
-        const id = String(++this.sequence);
+        const id = `${this.token}-${++this.sequence}`;
         return new Promise((resolve, reject) => {
             const timer = setTimeout(() => {
                 clearInterval(this.pending.get(id)?.retry);
@@ -315,16 +369,15 @@ export class Peer {
                     this.options.onPatch?.(patch);
                 return;
             }
-            if (!message.startsWith(CONTROL_PREFIX))
+            const control = decodeControl(message);
+            if (!control)
                 return;
-            const separator = message.indexOf(",", CONTROL_PREFIX.length);
-            if (separator < 0)
-                return;
-            const kind = message.slice(CONTROL_PREFIX.length, separator);
-            const body = JSON.parse(decodeURIComponent(message.slice(separator + 1)));
-            if (!object(body))
-                return;
-            if (kind === "response" && typeof body.id === "string") {
+            const { kind, body } = control;
+            if (kind === "bye") {
+                if (this.initialized && this.authorized)
+                    this.endSession();
+            }
+            else if (kind === "response" && typeof body.id === "string") {
                 const pending = this.pending.get(body.id);
                 if (!pending || !(Object.hasOwn(body, "result") !== Object.hasOwn(body, "error")))
                     return;
@@ -364,24 +417,38 @@ export class Peer {
                 };
                 const reply = (result) => {
                     try {
-                        if (!this.closed)
+                        if (this.closed)
+                            return;
+                        const prepared = this.prepared;
+                        this.prepared = undefined;
+                        // A reply already serialized by fits() is sent as it is, not encoded again.
+                        if (prepared?.id === id && prepared.result === result)
+                            this.transport.send(prepared.message);
+                        else
                             this.send("response", { id, result });
                     }
                     catch (error) {
                         fail(error);
                     }
                 };
+                if (this.handling >= MAX_CONCURRENT_REQUESTS) {
+                    fail(new ProtocolError("limit_exceeded", "Too many requests in progress"));
+                    return;
+                }
+                this.handling++;
                 let result;
                 try {
                     result = this.handle(body.method, body.params, id);
                 }
                 catch (error) {
+                    this.handling--;
                     fail(error);
                     return;
                 }
                 // Synchronous results, such as subscriptions with retained state, are sent in the same
                 // task, so no event can be sent between capturing state and replying with it.
                 if (!(result instanceof Promise)) {
+                    this.handling--;
                     reply(result);
                     return;
                 }
@@ -389,14 +456,35 @@ export class Peer {
                     result = await result;
                 }
                 catch (error) {
+                    this.handling--;
                     fail(error);
                     return;
                 }
+                this.handling--;
                 reply(result);
             }
         }
-        catch {
-            /* Ignore malformed envelopes and isolate transport/application callbacks. */
+        catch (error) {
+            // Malformed envelopes and failing application callbacks never reach the transport.
+            this.report(error, "receive");
+        }
+    }
+    /** The remote ended the connection: forget its subscriptions and fail its requests. */
+    endSession() {
+        this.initialized = false;
+        this.remoteCapabilities.clear();
+        this.topics.clear();
+        for (const pending of this.pending.values()) {
+            clearTimeout(pending.timer);
+            clearInterval(pending.retry);
+            pending.reject(new ProtocolError("closed", "Peer ended the connection"));
+        }
+        this.pending.clear();
+        try {
+            this.options.onClosed?.();
+        }
+        catch (error) {
+            this.report(error, "onClosed");
         }
     }
     checkPairing(code) {
@@ -411,9 +499,13 @@ export class Peer {
             throw new ProtocolError("unauthorized", "Incorrect or missing pairing code");
         }
     }
+    /** Serializes a reply once, keeping it for the send if it fits. */
     fits(id, result) {
-        const body = encodeURIComponent(JSON.stringify({ id, result }));
-        return `${CONTROL_PREFIX}response,${body}`.length <= MAX_MESSAGE_LENGTH;
+        const message = `${CONTROL_PREFIX}response,${encodeURIComponent(JSON.stringify({ id, result }))}`;
+        if (message.length > MAX_MESSAGE_LENGTH)
+            return false;
+        this.prepared = { id, result, message };
+        return true;
     }
     handle(method, params, id = "") {
         if (!object(params))
@@ -501,9 +593,21 @@ export class Peer {
                 throw new ProtocolError("unknown_method", `Unknown method: ${method}`);
         }
     }
-    close() {
+    /**
+     * Ends the connection. The remote is told, unless `notify` is false, so it can release notes
+     * and subscriptions held for this peer.
+     */
+    close(options = {}) {
         if (this.closed)
             return;
+        if (options.notify !== false && this.initialized && this.authorized) {
+            try {
+                this.send("bye", {});
+            }
+            catch {
+                /* The transport may already be gone. */
+            }
+        }
         this.closed = true;
         this.initialized = false;
         this.remoteCapabilities.clear();
