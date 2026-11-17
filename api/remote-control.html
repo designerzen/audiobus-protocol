@@ -1,257 +1,313 @@
 <!doctype html>
 <html lang="en">
-<meta charset="utf-8">
-<meta name="viewport" content="width=device-width, initial-scale=1">
-<title>Harmoneasy remote control</title>
-<meta name="description" content="Control Harmoneasy without pairing: notes, pitch bend, transport and every command palette control">
-<link rel="stylesheet" href="site.css">
-<style>
-  main { max-width: 64rem; }
-  fieldset { border: 1px solid var(--border); border-radius: 10px; padding: 1rem; margin: 0 0 1rem; background: var(--surface); }
-  legend { font-weight: 650; padding: 0 .3rem; }
-  input, select, button { font: inherit; padding: .35rem .6rem; }
-  input[type="url"] { width: 100%; }
-  .row { display: flex; flex-wrap: wrap; gap: .6rem 1rem; align-items: center; margin: .5rem 0; }
-  .keys { display: flex; gap: 2px; overflow-x: auto; padding-bottom: .3rem; touch-action: none; user-select: none; }
-  .keys button { min-width: 2.2rem; height: 6rem; display: flex; align-items: flex-end; justify-content: center; border: 1px solid var(--border); border-radius: 0 0 6px 6px; background: #fff; color: #222; }
-  .keys button.black { background: #222; color: #eee; height: 4rem; }
-  .keys button[aria-pressed="true"] { background: var(--accent); color: #fff; }
-  #frame { width: 100%; height: 34rem; border: 1px solid var(--border); border-radius: 10px; }
-  #controls { list-style: none; padding: 0; margin: 0; display: grid; gap: .4rem; }
-  #controls li { display: flex; flex-wrap: wrap; gap: .5rem; align-items: center; border-bottom: 1px solid var(--border); padding: .3rem 0; }
-  #controls small { color: var(--muted); }
-  .grow { flex: 1 1 14rem; }
-  [disabled] { opacity: .55; }
-</style>
-<main>
-<p><a href="../demos.html">All demos</a></p>
-<h1>Harmoneasy remote control</h1>
-<p class="lede">Control Harmoneasy from this page without pairing: play notes, bend pitch, run the transport and press any control in its command palette.</p>
+	<head>
+		<meta charset="UTF-8" />
+		<meta name="viewport" content="width=device-width, initial-scale=1" />
+		<meta name="color-scheme" content="dark" />
+		<meta
+			name="description"
+			content="Remote control Harmoneasy over audioBus Protocol: notes, drums, controllers, transport, presets and every interface control."
+		/>
+		<title>Remote control · Harmoneasy</title>
+		<link rel="icon" type="image/svg+xml" href="https://designerzen.github.io/harmoneasy/favicon.svg" />
+		<style>
+			:root {
+				color-scheme: dark;
+				font-family: system-ui, sans-serif;
+				--bg: #0b1420;
+				--surface: #132131;
+				--raised: #1a2c40;
+				--border: #304052;
+				--text: #e5edf5;
+				--muted: #9fb0c2;
+				--accent: #9cddcf;
+				--accent-strong: #d0fff3;
+				--warn: #f4c97a;
+				color: var(--text);
+				background: var(--bg);
+			}
+			* { box-sizing: border-box; }
+			body { margin: 0; }
+			a { color: var(--accent); }
+			button, input, select { font: inherit; }
+			button {
+				cursor: pointer;
+				color: var(--text);
+				background: var(--raised);
+				border: 1px solid var(--border);
+				border-radius: 6px;
+				padding: 0.45rem 0.8rem;
+			}
+			button:hover:not(:disabled) { border-color: var(--accent); }
+			button.primary { color: var(--bg); background: var(--accent); border-color: var(--accent); font-weight: 650; }
+			button[aria-pressed="true"], button.pressed { color: var(--bg); background: var(--accent); border-color: var(--accent); }
+			button:disabled, fieldset:disabled { opacity: 0.55; cursor: default; }
+			:focus-visible { outline: 3px solid var(--accent-strong); outline-offset: 2px; }
+			input[type="range"] { width: 100%; accent-color: var(--accent); }
+			input[type="text"], input[type="number"], input[type="url"], input[type="search"], select {
+				color: var(--text);
+				background: var(--bg);
+				border: 1px solid var(--border);
+				border-radius: 6px;
+				padding: 0.4rem 0.5rem;
+				min-width: 0;
+			}
+			header { padding: 1.25rem 1.5rem 0; }
+			header h1 { margin: 0 0 0.3rem; font-size: clamp(1.5rem, 3vw, 2.2rem); letter-spacing: -0.03em; }
+			header p { margin: 0; color: var(--muted); max-width: 80ch; line-height: 1.5; }
+			#status-bar {
+				position: sticky;
+				top: 0;
+				z-index: 2;
+				display: flex;
+				flex-wrap: wrap;
+				gap: 0.5rem 1rem;
+				align-items: center;
+				padding: 0.6rem 1.5rem;
+				background: color-mix(in srgb, var(--bg) 92%, transparent);
+				border-bottom: 1px solid var(--border);
+				backdrop-filter: blur(6px);
+			}
+			#status::before { content: "●"; margin-right: 0.4rem; color: var(--muted); }
+			body[data-connection="waiting"] #status::before { color: var(--warn); }
+			body[data-connection="connected"] #status::before { color: var(--accent); }
+			#status-bar .grow { flex: 1 1 auto; }
+			main {
+				display: grid;
+				grid-template-columns: minmax(0, 1.1fr) minmax(0, 1fr);
+				gap: 1rem;
+				padding: 1rem 1.5rem 2rem;
+				align-items: start;
+			}
+			@media (max-width: 1100px) { main { grid-template-columns: minmax(0, 1fr); } }
+			#app-column { position: sticky; top: 3.5rem; display: grid; gap: 1rem; }
+			@media (max-width: 1100px) { #app-column { position: static; } }
+			#stage iframe { width: 100%; height: min(78vh, 900px); border: 1px solid var(--border); border-radius: 10px; background: #000; }
+			#controls-column { display: grid; gap: 1rem; min-width: 0; }
+			fieldset { border: 1px solid var(--border); border-radius: 10px; padding: 1rem; margin: 0; background: var(--surface); min-width: 0; }
+			legend { font-weight: 700; padding: 0 0.4rem; }
+			.hint, small { color: var(--muted); }
+			.row { display: flex; flex-wrap: wrap; gap: 0.5rem 0.8rem; align-items: center; margin: 0.5rem 0; }
+			.row label { display: flex; gap: 0.4rem; align-items: center; }
+			.grid { display: grid; grid-template-columns: repeat(auto-fill, minmax(12rem, 1fr)); gap: 0.6rem 1rem; }
+			.grid label { display: grid; gap: 0.2rem; font-size: 0.9rem; }
+			#next-note { width: 100%; min-height: 6rem; font-size: 1.4rem; font-weight: 700; touch-action: none; }
+			.keys { display: flex; gap: 2px; overflow-x: auto; padding-bottom: 0.3rem; touch-action: none; user-select: none; }
+			.keys > * {
+				flex: 0 0 auto;
+				min-width: 2rem;
+				height: 5.5rem;
+				display: flex;
+				align-items: flex-end;
+				justify-content: center;
+				padding: 0 0 0.3rem;
+				border: 1px solid var(--border);
+				border-radius: 0 0 6px 6px;
+				font-size: 0.65rem;
+				background: #f1f5f9;
+				color: #223;
+			}
+			.keys > .black { background: #1d2733; color: #eee; height: 3.6rem; min-width: 1.5rem; }
+			.keys > .pressed, .keys > .lit { background: var(--accent); color: var(--bg); }
+			#heard > * { min-width: 1rem; height: 3.2rem; font-size: 0; }
+			#heard > .black { height: 2rem; min-width: 0.8rem; }
+			#drums { display: grid; grid-template-columns: repeat(4, minmax(0, 1fr)); gap: 0.5rem; }
+			.pad { min-height: 4rem; display: grid; place-content: center; gap: 0.2rem; touch-action: none; font-weight: 650; }
+			.pad small { font-weight: 400; }
+			.pad.pressed small { color: var(--bg); }
+			ul.plain { list-style: none; padding: 0; margin: 0; }
+			#remote-presets li { display: flex; flex-wrap: wrap; gap: 0.5rem; margin: 0.4rem 0; }
+			#preset-list { display: grid; grid-template-columns: repeat(auto-fill, minmax(13rem, 1fr)); gap: 0.4rem; max-height: 22rem; overflow: auto; margin-top: 0.6rem; }
+			.preset { width: 100%; height: 100%; text-align: left; display: grid; gap: 0.2rem; }
+			.preset.remote { border-color: var(--accent); }
+			#controls > li { margin: 0.3rem 0; }
+			summary { cursor: pointer; font-weight: 650; padding: 0.3rem 0; }
+			.control-grid { display: grid; grid-template-columns: repeat(auto-fill, minmax(14rem, 1fr)); gap: 0.4rem; margin: 0.3rem 0 0.6rem; }
+			.control { display: grid; grid-template-columns: minmax(0, 1fr) auto; gap: 0.3rem 0.5rem; align-items: center; padding: 0.4rem 0.5rem; background: var(--raised); border-radius: 6px; }
+			.control-label { overflow-wrap: anywhere; font-size: 0.9rem; }
+			.control-number input, .control-text form, .control-choice select { grid-column: 1 / -1; }
+			.control-number output { grid-row: 1; grid-column: 2; color: var(--muted); }
+			form.inline { display: flex; gap: 0.4rem; align-items: end; flex-wrap: wrap; }
+			form.inline input { flex: 1 1 6rem; }
+			#commands, #properties { display: grid; gap: 0.5rem; max-height: 30rem; overflow: auto; }
+			#commands li, #properties li { background: var(--raised); border-radius: 6px; padding: 0.6rem; }
+			#commands li.unavailable { opacity: 0.6; }
+			.command { display: flex; flex-wrap: wrap; gap: 0.4rem 0.8rem; align-items: end; }
+			.command p { flex-basis: 100%; margin: 0; color: var(--muted); font-size: 0.9rem; }
+			.command label, #properties label { display: grid; gap: 0.2rem; font-size: 0.85rem; }
+			#properties li { display: flex; flex-wrap: wrap; gap: 0.4rem 0.8rem; align-items: center; }
+			output { font-family: ui-monospace, monospace; font-size: 0.85rem; overflow-wrap: anywhere; }
+			code { color: var(--accent); font-size: 0.85rem; }
+			#log { font-family: ui-monospace, monospace; font-size: 0.8rem; max-height: 16rem; overflow: auto; margin: 0.5rem 0 0; padding: 0; list-style: none; }
+			#log li { padding: 0.1rem 0; border-bottom: 1px solid #1c2b3b; overflow-wrap: anywhere; }
+			#log .log-in { color: var(--accent); }
+			#log .log-info { color: var(--warn); }
+			#last-note { font-weight: 700; color: var(--accent); }
+			/* Opened from Harmoneasy: it controls that window, so nothing is embedded here. */
+			.opener-only { display: none; }
+			body.opener-mode .opener-only { display: block; }
+			body.opener-mode .embed-only { display: none; }
+			body.opener-mode main { grid-template-columns: minmax(0, 1fr); }
+			body.opener-mode #app-column { position: static; }
+		</style>
+	</head>
+	<body data-connection="idle">
+		<header>
+			<p><a href="../demos.html">← All protocol demos</a> · <a href="https://designerzen.github.io/harmoneasy/">HarmonEasy</a></p>
+			<h1>Remote control Harmoneasy</h1>
+			<p>
+				This page talks to Harmoneasy over <strong>audioBus Protocol</strong> without pairing. It plays notes and drums, moves
+				controllers, runs the transport, loads presets, and presses, switches or sets every control Harmoneasy offers. Notes that
+				Harmoneasy sends back through its audioBus Protocol output appear under <em>Sent by Harmoneasy</em>.
+			</p>
+		</header>
+		<div id="status-bar">
+			<span id="status" role="status" class="grow">Opening Harmoneasy…</span>
+			<button id="reconnect" type="button">Reconnect</button>
+		</div>
+		<main>
+			<div id="app-column">
+				<fieldset>
+					<legend>Harmoneasy</legend>
+					<form id="open-form" class="row">
+						<input id="address" type="url" aria-label="Harmoneasy address" style="flex: 1 1 18rem" />
+						<label class="embed-only"><input id="embed" type="checkbox" checked /> Embed</label>
+						<button class="primary" type="submit">Open</button>
+					</form>
+					<div class="row" id="quick-open"></div>
+					<p class="hint opener-only">
+						Controlling the Harmoneasy window that opened this page. Opening an address or preset here reloads that window.
+					</p>
+					<p class="hint">
+						Press <strong>Start</strong> inside Harmoneasy to enable sound. The page reconnects by itself after every reload or
+						preset change, as long as the preset has an audioBus Protocol input.
+					</p>
+					<div id="stage" class="embed-only"></div>
+				</fieldset>
+			</div>
 
-<fieldset>
-  <legend>1. Open Harmoneasy</legend>
-  <label>Harmoneasy address <input id="url" type="url"></label>
-  <div class="row">
-    <label><input type="radio" name="mode" value="popup" checked> New window</label>
-    <label><input type="radio" name="mode" value="embed"> Embed on this page</label>
-    <button id="open">Open Harmoneasy</button>
-  </div>
-  <p><small>Harmoneasy builds that send <code>Cross-Origin-Opener-Policy: same-origin</code> cut the link to a window that opens them; embed those instead. Browser audio still needs a click inside Harmoneasy.</small></p>
-  <div id="stage"></div>
-</fieldset>
+			<div id="controls-column">
+				<fieldset data-remote>
+					<legend>Play</legend>
+					<button id="next-note" type="button">Next note</button>
+					<div class="row">
+						<button id="phrase" type="button">Play eight steps</button>
+						<span class="hint">Space or Enter on this page also presses Next note. In the step-through preset every note on plays the next song note.</span>
+					</div>
+					<div class="row">
+						<label>Channel <select id="channel"></select></label>
+						<label>Velocity <input id="velocity" type="range" min="1" max="127" value="100" style="width: 8rem" /></label>
+						<label>Octave <input id="octave" type="number" min="0" max="8" value="4" style="width: 4rem" /></label>
+						<label title="Send notes and controllers as raw WebMidiLink MIDI instead of midi.* commands"><input id="raw-midi" type="checkbox" /> Raw MIDI</label>
+					</div>
+					<div class="keys" id="keys" aria-label="Keyboard"></div>
+				</fieldset>
 
-<fieldset>
-  <legend>2. Allow control and connect</legend>
-  <p>In Harmoneasy, open the <strong>audioBus Protocol</strong> input in the graph, tick <strong>Accept control from any window without pairing</strong> and press its <strong>Connect</strong> button. Then press Connect here. Connecting keeps trying for 15 seconds.</p>
-  <div class="row"><button id="connect" disabled>Connect</button> <span id="state" role="status">Open Harmoneasy first.</span></div>
-</fieldset>
+				<fieldset data-remote>
+					<legend>Drums (channel 10)</legend>
+					<div id="drums"></div>
+					<div class="row">
+						<button id="beat" type="button" aria-pressed="false">Play a beat</button>
+						<span class="hint">Keys Z to , play the pads. The beat follows the tempo below.</span>
+					</div>
+				</fieldset>
 
-<fieldset id="play" disabled>
-  <legend>3. Play</legend>
-  <div class="row">
-    <label>Channel <select id="channel"></select></label>
-    <label>Velocity <input id="velocity" type="range" min="1" max="127" value="100"></label>
-    <label>Octave <input id="octave" type="number" min="1" max="7" value="4"></label>
-  </div>
-  <div class="keys" id="keys" aria-label="Keyboard"></div>
-  <div class="row">
-    <label class="grow">Pitch bend <input id="bend" type="range" min="-8192" max="8191" value="0"></label>
-    <label class="grow">Modulation <input id="modulation" type="range" min="0" max="127" value="0"></label>
-    <label class="grow">Channel aftertouch <input id="pressure" type="range" min="0" max="127" value="0"></label>
-  </div>
-</fieldset>
+				<fieldset data-remote>
+					<legend>Expression and controllers</legend>
+					<div class="grid">
+						<label>Pitch bend <input id="bend" type="range" min="-8192" max="8191" value="0" /></label>
+						<label>Channel aftertouch <input id="pressure" type="range" min="0" max="127" value="0" /></label>
+						<label>Poly aftertouch note <input id="poly-note" type="number" min="0" max="127" value="60" /></label>
+						<label>Poly aftertouch pressure <input id="poly-pressure" type="range" min="0" max="127" value="0" /></label>
+					</div>
+					<div class="grid" id="controllers" style="margin-top: 0.6rem"></div>
+					<div class="row">
+						<button id="sustain" type="button" aria-pressed="false">Sustain pedal (CC 64)</button>
+						<form id="cc-form" class="inline">
+							<label>CC <input id="cc-number" type="number" min="0" max="127" value="74" style="width: 4.5rem" /></label>
+							<label>value <input id="cc-value" type="number" min="0" max="127" value="64" style="width: 4.5rem" /></label>
+							<button type="submit">Send CC</button>
+						</form>
+						<form id="program-form" class="inline">
+							<label>Program <input id="program" type="number" min="0" max="127" value="0" style="width: 4.5rem" /></label>
+							<button type="submit">Send</button>
+						</form>
+						<button id="all-notes-off" type="button">All notes off</button>
+					</div>
+				</fieldset>
 
-<fieldset id="transport" disabled>
-  <legend>4. Transport</legend>
-  <div class="row">
-    <button data-command="transport.start">Play</button>
-    <button data-command="transport.stop">Stop</button>
-    <button data-command="app.panic">Panic</button>
-    <label>Tempo <input id="tempo" type="number" min="10" max="303" step="1" value="114"></label>
-    <button id="set-tempo">Set tempo</button>
-    <span>Now: <strong id="transport-state">—</strong></span>
-  </div>
-</fieldset>
+				<fieldset data-remote>
+					<legend>Transport</legend>
+					<div class="row">
+						<button data-command="transport.start" type="button" class="primary">▶ Play</button>
+						<button data-command="transport.stop" type="button">■ Stop</button>
+						<button data-command="app.panic" type="button">Panic</button>
+						<button id="transport-get" type="button">Read</button>
+						<strong id="transport-state">—</strong>
+					</div>
+					<div class="row">
+						<button data-tempo="-10" type="button">−10</button>
+						<button data-tempo="-1" type="button">−1</button>
+						<label style="flex: 1 1 12rem">Tempo <input id="tempo" type="range" min="10" max="303" value="120" /></label>
+						<output id="tempo-value">120</output>
+						<button data-tempo="1" type="button">+1</button>
+						<button data-tempo="10" type="button">+10</button>
+					</div>
+				</fieldset>
 
-<fieldset id="interface" disabled>
-  <legend>5. Any control in the command palette</legend>
-  <div class="row">
-    <label class="grow">Search <input id="query" type="search" placeholder="for example: reverb, volume, record"></label>
-    <button id="list">List controls</button>
-  </div>
-  <ul id="controls"></ul>
-</fieldset>
-</main>
-<script type="module">
-import { Peer, windowTransport } from '../dist/index.js'
-const EVENT_CLICK = 'click', EVENT_INPUT = 'input', EVENT_CHANGE = 'change', EVENT_PAGE_HIDE = 'pagehide'
-const EVENT_POINTER_DOWN = 'pointerdown', EVENT_POINTER_UP = 'pointerup', EVENT_POINTER_LEAVE = 'pointerleave', EVENT_POINTER_CANCEL = 'pointercancel'
-const DEFAULT_URL = 'https://designerzen.github.io/harmoneasy/presets/songs/never-gonna-jam-everything/'
-const NAMES = ['C', 'C♯', 'D', 'D♯', 'E', 'F', 'F♯', 'G', 'G♯', 'A', 'A♯', 'B']
-const $ = (selector) => document.querySelector(selector)
-const state = (text) => { $('#state').textContent = text }
-let target, origin, peer
+				<fieldset data-remote>
+					<legend>Sent by Harmoneasy</legend>
+					<p class="hint">
+						Notes from Harmoneasy's audioBus Protocol output (with <em>Also send to applications connected to this window</em>
+						on). Received: <strong id="received-count">0</strong> · last <span id="last-note">—</span>
+					</p>
+					<div class="keys" id="heard" aria-label="Notes sent by Harmoneasy"></div>
+					<label class="row"><input id="hear" type="checkbox" /> Play received notes on this page too</label>
+				</fieldset>
 
-$('#url').value = DEFAULT_URL
-for (let channel = 1; channel <= 16; channel++) $('#channel').append(new Option(String(channel), String(channel)))
-const channel = () => Number($('#channel').value)
-const enable = (on) => { for (const id of ['#play', '#transport', '#interface']) $(id).disabled = !on }
-// Calls are sent in order; failures are reported without interrupting playing.
-const send = (command, args = {}) =>
-  peer ? peer.call(command, args).catch((error) => { state(`${command}: ${error.message}`) }) : Promise.resolve()
+				<fieldset data-remote>
+					<legend>Presets</legend>
+					<ul class="plain" id="remote-presets"></ul>
+					<p class="hint" id="preset-command-missing" hidden>This Harmoneasy build has no presets.load command; reopen Harmoneasy with a preset instead.</p>
+					<div class="row">
+						<input id="preset-search" type="search" placeholder="Search every preset" aria-label="Search presets" style="flex: 1 1 12rem" />
+						<small id="preset-count"></small>
+						<button id="preset-refresh" type="button">Refresh</button>
+					</div>
+					<ul class="plain" id="preset-list"></ul>
+				</fieldset>
 
-$('#open').addEventListener(EVENT_CLICK, () => {
-  try {
-    const address = new URL($('#url').value)
-    if (!['http:', 'https:'].includes(address.protocol)) throw new Error('Use an HTTP or HTTPS address')
-    peer?.close(); peer = undefined; enable(false)
-    $('#stage').replaceChildren()
-    origin = address.origin
-    if (document.querySelector('input[name="mode"]:checked').value === 'embed') {
-      const frame = document.createElement('iframe')
-      frame.id = 'frame'
-      frame.src = address.href
-      frame.allow = 'midi; autoplay; gamepad; fullscreen'
-      frame.title = 'Harmoneasy'
-      $('#stage').append(frame)
-      target = frame.contentWindow
-    } else {
-      target = window.open(address.href, 'harmoneasy')
-      if (!target) throw new Error('Allow popups for this page, or embed Harmoneasy instead')
-    }
-    $('#connect').disabled = false
-    state('Harmoneasy is opening. Allow control in its audioBus Protocol input, then press Connect.')
-  } catch (error) { state(error.message) }
-})
+				<fieldset data-remote>
+					<legend>Every interface control</legend>
+					<p class="hint">
+						Everything Harmoneasy's command palette can reach right now: buttons, switches, choices, sliders and fields, including
+						control surfaces, device panels and transformer settings. Lists change with the open preset and panels.
+					</p>
+					<div class="row">
+						<input id="control-search" type="search" placeholder="for example: volume, harmoniser, record" aria-label="Search controls" style="flex: 1 1 12rem" />
+						<small id="control-count"></small>
+						<button id="control-refresh" type="button">Refresh</button>
+					</div>
+					<ul class="plain" id="controls"></ul>
+				</fieldset>
 
-const showTransport = (data) => {
-  if (data && typeof data === 'object') $('#transport-state').textContent = `${data.running ? 'playing' : 'stopped'}, ${data.bpm} BPM, ${data.clockSource} clock`
-}
+				<fieldset data-remote>
+					<legend>Every command <small id="command-count"></small></legend>
+					<ul class="plain" id="commands"></ul>
+				</fieldset>
 
-$('#connect').addEventListener(EVENT_CLICK, async () => {
-  peer?.close()
-  enable(false)
-  peer = new Peer(windowTransport(target, origin), {
-    identity: { name: 'audioBus remote control demo', version: '1' },
-    // Initialization repeats until Harmoneasy's input is listening.
-    timeoutMs: 15000,
-    onEvent: (topic, data) => { if (topic === 'transport.changed') showTransport(data) }
-  })
-  state('Connecting…')
-  try {
-    const identity = await peer.connect()
-    const ids = new Set((await peer.discover()).map((command) => command.id))
-    const missing = ['midi.noteOn', 'ui.list'].filter((id) => !ids.has(id))
-    if (missing.length) state(`Connected to ${identity.name}, but this build lacks ${missing.join(' and ')}; some controls will not work.`)
-    else state(`Connected to ${identity.name} ${identity.version}.`)
-    const { state: transport } = await peer.subscribeState('transport.changed')
-    showTransport(transport)
-    if (transport) $('#tempo').value = Math.round(transport.bpm)
-    enable(true)
-  } catch (error) {
-    state(error.code === 'timeout'
-      ? 'No answer. Check that Accept control from any window is ticked and the input is connected in Harmoneasy, then try again.'
-      : error.message)
-  }
-})
+				<fieldset data-remote>
+					<legend>Properties</legend>
+					<ul class="plain" id="properties"></ul>
+				</fieldset>
 
-// Keyboard: two octaves from the chosen octave's C.
-const held = new Map()
-function key(offset) {
-  const name = NAMES[offset % 12]
-  const button = document.createElement('button')
-  button.type = 'button'
-  button.className = name.includes('♯') ? 'black' : ''
-  button.textContent = name.includes('♯') ? '' : `${name}${Math.floor(offset / 12) ? '′' : ''}`
-  button.setAttribute('aria-label', `${name} ${Math.floor(offset / 12) + Number($('#octave').value)}`)
-  const start = (event) => {
-    event.preventDefault()
-    if (held.has(button)) return
-    const note = (Number($('#octave').value) + 1) * 12 + offset
-    held.set(button, { note, channel: channel() })
-    button.setAttribute('aria-pressed', 'true')
-    void send('midi.noteOn', { note, velocity: Number($('#velocity').value), channel: channel() })
-  }
-  const stop = () => {
-    const note = held.get(button)
-    if (!note) return
-    held.delete(button)
-    button.setAttribute('aria-pressed', 'false')
-    void send('midi.noteOff', note)
-  }
-  button.addEventListener(EVENT_POINTER_DOWN, (event) => {
-    // Keep the pointer so a finger sliding off the key still releases the note on lift.
-    try { button.setPointerCapture(event.pointerId) } catch { /* Not all pointers can be captured. */ }
-    start(event)
-  })
-  for (const type of [EVENT_POINTER_UP, EVENT_POINTER_LEAVE, EVENT_POINTER_CANCEL]) button.addEventListener(type, stop)
-  return button
-}
-$('#keys').append(...Array.from({ length: 25 }, (_, offset) => key(offset)))
-
-$('#bend').addEventListener(EVENT_INPUT, () => void send('midi.pitchBend', { value: Number($('#bend').value), channel: channel() }))
-// Pitch bend springs back to the centre when released.
-$('#bend').addEventListener(EVENT_CHANGE, () => { $('#bend').value = 0; void send('midi.pitchBend', { value: 0, channel: channel() }) })
-$('#modulation').addEventListener(EVENT_INPUT, () => void send('midi.controlChange', { controller: 1, value: Number($('#modulation').value), channel: channel() }))
-$('#pressure').addEventListener(EVENT_INPUT, () => void send('midi.channelAftertouch', { pressure: Number($('#pressure').value), channel: channel() }))
-
-for (const button of document.querySelectorAll('[data-command]')) {
-  button.addEventListener(EVENT_CLICK, () => void send(button.dataset.command))
-}
-$('#set-tempo').addEventListener(EVENT_CLICK, () => void send('transport.setTempo', { bpm: Number($('#tempo').value) }))
-
-// Interface controls, discovered from Harmoneasy's command palette.
-async function listControls() {
-  if (!peer) return
-  try {
-    const query = $('#query').value.trim()
-    const controls = await peer.call('ui.list', query ? { query } : {})
-    $('#controls').replaceChildren(...controls.slice(0, 200).map(row))
-    state(`${controls.length} controls${controls.length > 200 ? '; showing the first 200, search to narrow' : ''}.`)
-  } catch (error) { state(error.message) }
-}
-function row(control) {
-  const item = document.createElement('li')
-  const text = document.createElement('span')
-  text.className = 'grow'
-  text.innerHTML = '<strong></strong> <small></small>'
-  text.querySelector('strong').textContent = control.label
-  text.querySelector('small').textContent = `${control.context || 'Application'} · ${control.value}`
-  item.append(text)
-  const run = async (command, args) => {
-    try { await peer.call(command, args); await listControls() } catch (error) { state(`${control.label}: ${error.message}`) }
-  }
-  if (control.kind === 'action' || control.kind === 'toggle') {
-    const press = document.createElement('button')
-    press.textContent = control.kind === 'toggle' ? 'Toggle' : 'Press'
-    press.addEventListener(EVENT_CLICK, () => run('ui.activate', { id: control.id }))
-    item.append(press)
-  } else {
-    let editor
-    if (control.kind === 'choice') {
-      editor = document.createElement('select')
-      for (const option of control.options) editor.append(new Option(option, option, false, option === control.value))
-    } else {
-      editor = document.createElement('input')
-      editor.type = control.kind === 'number' ? 'number' : 'text'
-      editor.value = control.value
-      for (const bound of ['min', 'max', 'step']) if (control[bound] !== undefined) editor[bound] = control[bound]
-    }
-    editor.setAttribute('aria-label', control.label)
-    const set = document.createElement('button')
-    set.textContent = 'Set'
-    set.addEventListener(EVENT_CLICK, () => run('ui.setValue', { id: control.id, value: String(editor.value) }))
-    item.append(editor, set)
-  }
-  return item
-}
-$('#list').addEventListener(EVENT_CLICK, listControls)
-$('#query').addEventListener(EVENT_CHANGE, listControls)
-
-window.addEventListener(EVENT_PAGE_HIDE, () => {
-  // Closing tells Harmoneasy, which releases every note this page still holds.
-  held.clear()
-  peer?.close()
-})
-</script>
+				<fieldset>
+					<legend>Log</legend>
+					<button id="clear-log" type="button">Clear</button>
+					<ul id="log"></ul>
+				</fieldset>
+			</div>
+		</main>
+		<script type="module" src="./remote-control.js"></script>
+	</body>
 </html>

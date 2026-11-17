@@ -22,13 +22,23 @@
 			{
 				"id": "harmoneasy",
 				"title": "Control Harmoneasy",
-				"intro": "Harmoneasy's audioBus Protocol input exposes its transport, MIDI commands and every control in its command palette.",
+				"intro": "HarmonEasy listens by default through its audioBus Protocol Input. Press Start inside the embedded app to enable audio; the remote connects automatically.",
 				"demos": [
 					{
 						"title": "Remote control without pairing",
-						"description": "Open or embed Harmoneasy, tick Accept control from any window in its audioBus Protocol input, then play notes, bend pitch, run the transport and press any interface control from this page.",
+						"description": "Full remote: keyboard, drums, controllers, transport, presets, every discovered command, property and interface control, plus MIDI feedback. No pairing or manual connection setup.",
 						"href": "api/remote-control.html",
-						"source": "api/remote-control.html"
+						"source": "api/remote-control.ts"
+					},
+					{
+						"title": "Step through a song",
+						"description": "Press Start, then use any note or the remote Next note button to advance the song.",
+						"href": "https://designerzen.github.io/harmoneasy/presets/protocol/step-song/"
+					},
+					{
+						"title": "Remote playground",
+						"description": "A ready-made HarmonEasy setup for testing remote MIDI and application control.",
+						"href": "https://designerzen.github.io/harmoneasy/presets/protocol/remote-playground/"
 					}
 				]
 			},

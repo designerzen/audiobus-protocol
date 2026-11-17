@@ -23,7 +23,7 @@ IDs are strings, unique among requests pending in the same direction. The SDK pr
 
 Install listeners on both sides, then call `connect()` on either side after application readiness. It sends `initialize`. Both sides must agree on the exact integer protocol version; version 1 rejects other versions with `unsupported_version`. The response returns application identity, capabilities, and the message limit. Successful initialization enables control in both directions. Application versions do not determine protocol compatibility. Repeated initialization of the same connection is allowed and does not clear subscriptions.
 
-No automatic window discovery or acceptance of arbitrary senders takes place. The host explicitly provides the remote window and trusted origin. A reload creates a new application session: close the old peer, release its input notes, create a new peer and initialize again. Close rejects outstanding local requests and removes local listeners and subscriptions. Since SDK 0.4, `close()` also sends `control,bye,%7B%7D` to an initialized peer, unless called with `{ notify: false }`; the receiver forgets the sender's subscriptions, fails its own pending requests with `closed`, and calls `onClosed`, where a host releases notes held for that connection. Close has no wire acknowledgement and cannot cancel a command already executing remotely. Remote disappearance is detected through request timeouts or application lifecycle signals, not heartbeats.
+The SDK does not discover windows automatically. A host can provide an exact window and origin, or accept incoming windows as separate sessions as audioBus does by default (below). A reload creates a new application session: close the old peer, release its input notes, create a new peer and initialize again. Close rejects outstanding local requests and removes local listeners and subscriptions. On current `main`, `close()` also sends `control,bye,%7B%7D` to an initialized peer, unless called with `{ notify: false }`; the receiver forgets the sender's subscriptions, fails its own pending requests with `closed`, and calls `onClosed`, where a host releases notes held for that connection. Close has no wire acknowledgement and cannot cancel a command already executing remotely. Remote disappearance is detected through request timeouts or application lifecycle signals, not heartbeats.
 
 ### Pairing codes (SDK 0.3)
 
@@ -33,14 +33,14 @@ Until a matching code arrives, the requiring peer ignores `midi`, `ump` and `lin
 
 ### Accepting unpaired senders
 
-A host may let a person opt in to control from any window without pairing, as Harmoneasy's audioBus Protocol input does with **Accept control from any window without pairing**. The SDK has no wildcard transport; the host listens for `message` events itself and creates one Peer per sending window, with a transport whose `send` posts only to that window and that event's exact origin. Hosts doing this should:
+A host may accept control from any window without pairing. HarmonEasy's audioBus Protocol Input listens this way by default; pairing is optional in advanced settings. The SDK has no wildcard transport; the host listens for `message` events itself and creates one Peer per sending window, with a transport whose `send` posts only to that window and that event's exact origin. Hosts doing this should:
 
-- keep it off by default, make it an explicit choice, and say that any page able to message the window gains control;
+- document the acceptance policy; audioBus listens by default and offers optional pairing in advanced settings;
 - ignore messages without a source window or with an empty or `null` origin, since replies could only be broadcast with `*`;
 - start a fresh session, releasing its held notes, when a known window's origin changes;
 - cap the number of sessions and free the slots of closed windows;
 - route each session's MIDI through its own note tracking, so closing one session releases only its notes;
-- allot a session only to an `initialize` request (`isInitializeRequest(message)`), never to stray MIDI or malformed frames, and drop sessions that never complete initialization, so junk traffic cannot occupy every slot;
+- allocate sessions for valid `initialize` requests or valid legacy MIDI (`decodeMidi(message)`), never malformed frames; expire incomplete initialization attempts without requiring legacy senders to initialize;
 - end the session on `bye`, through `onClosed`;
 - run one listener for the whole application when several Inputs accept unpaired control, so each application command executes once per request.
 

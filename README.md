@@ -23,7 +23,7 @@ flowchart LR
 ## Install
 
 ```sh
-npm install git+https://github.com/designerzen/audiobus-protocol.git   # pin a commit for reproducible builds
+npm install git+https://github.com/designerzen/audiobus-protocol.git#main
 ```
 
 Or `npm install ../audiobus-protocol` for a local checkout. The built `dist/` is committed, so Git installs work with install scripts disabled (`--ignore-scripts`). There is no npm release yet.
@@ -235,7 +235,10 @@ Try it live:
 
 - **[Harmoneasy remote control](https://designerzen.github.io/harmoneasy/protocol-remote.html)**: notes, drums, controllers, transport, presets, and a button for every command, property and interface control. In Harmoneasy itself, the **Remote** toolbar button opens it.
 - **[Step through a song](https://designerzen.github.io/harmoneasy/presets/protocol/step-song/)**: any key, the pad, or a remote note plays the next note, and the note is sent back to connected pages.
-- [SDK remote control demo](api/remote-control.html): the same idea in a single file, built on this repository's `dist/`.
+- **[Protocol-site HarmonEasy remote](https://designerzen.github.io/audiobus-protocol/api/remote-control.html)**: the full remote, built on this repository's SDK. Embeds HarmonEasy and reconnects automatically; press Start inside the app. Includes keyboard, drums, presets, all discovered commands/properties/interface controls, and MIDI feedback.
+- **[Remote playground](https://designerzen.github.io/harmoneasy/presets/protocol/remote-playground/)**: a ready-made setup for testing remote instrument control.
+
+Test your local app with [the SDK remote targeting localhost](https://designerzen.github.io/audiobus-protocol/api/remote-control.html?app=http://localhost:1999/). Use the app toolbar’s **Remote** button to control your existing setup. Remote notes enter its Protocol Input and follow its current transformers and outputs.
 
 See [Control Harmoneasy](docs/integration.md#control-harmoneasy) for the full reference.
 
@@ -243,9 +246,9 @@ See [Control Harmoneasy](docs/integration.md#control-harmoneasy) for the full re
 
 | Demo | Shows |
 | --- | --- |
-| [Two browser windows](examples/browser.html) | Symmetric commands between a page and a popup |
-| [Pairing codes and retained state](examples/pairing.html) | A popup that requires a code, and state delivered with the subscription |
-| [MIDI destination](examples/receiver.html) | A receiver for Harmoneasy's Protocol Output: notes, UMP, tempo, panic, patches, optional sound |
+| [Two browser windows](https://designerzen.github.io/audiobus-protocol/examples/browser.html) | Symmetric commands between a page and a popup |
+| [Pairing codes and retained state](https://designerzen.github.io/audiobus-protocol/examples/pairing.html) | A popup that requires a code, and state delivered with the subscription |
+| [MIDI destination](https://designerzen.github.io/audiobus-protocol/examples/receiver.html) | A receiver for Harmoneasy's Protocol Output: notes, UMP, tempo, panic, patches, optional sound |
 | [In-memory peers](examples/peers.js) · [console](api/console.html?example=peers) | Connect, discover, read, subscribe, set, in Node |
 | [MIDI 2 and properties](examples/midi2.js) · [console](api/console.html?example=midi2) | UMP, a capability bundle, and property writes |
 
@@ -278,7 +281,7 @@ Throw `new ProtocolError('invalid_params', message)` from `execute` to reject a 
 
 - `windowTransport(target, origin)` takes a specific window and an exact origin. It checks `event.source` and `event.origin` and never uses `*`.
 - An origin tells you who is connected, not what they may do. Give each connection a registry that suits it.
-- Use pairing codes when your application did not choose the peer window. To accept control from any window, follow [accepting unpaired senders](docs/protocol.md#accepting-unpaired-senders) and keep it off by default.
+- Pairing codes are optional when the host wants explicit approval. audioBus accepts open connections by default; see [accepting unpaired senders](docs/protocol.md#accepting-unpaired-senders) for session handling.
 - Messages over 262,144 characters are rejected, a peer runs at most 32 requests at once, and replies are matched to a per-Peer token, so an earlier session cannot answer a new one.
 - A timed-out command may still have run. Commands that need a browser gesture, such as starting audio, still need a click.
 
@@ -291,7 +294,8 @@ npm install
 npm test              # build and run the tests
 npm run example       # in-memory peers
 npm run example:midi2
-npm run build:site    # GitHub Pages site in _site/
+npm run build:demo    # type-check and compile api/remote-control.ts
+npm run build:site    # SDK, remote and GitHub Pages site in _site/
 ```
 
 Commit `dist/` with any source change (`npm run build`); CI fails if it is out of date.
@@ -300,7 +304,7 @@ Commit `dist/` with any source change (`npm run build`); CI fails if it is out o
 
 | Package | Adds |
 | --- | --- |
-| 0.4 (on `main`) | Per-Peer request tokens, `bye` on `close()`, `onClosed` and `onError`, request limits |
+| 0.3.0 (current `main`) | Per-Peer request tokens, `bye` on `close()`, `onClosed` and `onError`, request limits |
 | 0.3 | Pairing codes, retained subscription state (`retain`, `subscribeState`) |
 | 0.2 | Negotiated UMP, properties, capability bundles |
 

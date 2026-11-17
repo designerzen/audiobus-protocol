@@ -12,7 +12,7 @@ const site = JSON.parse(await readFile(join(here, "site.json"), "utf8"))
 const pkg = JSON.parse(await readFile(join(root, "package.json"), "utf8"))
 const out = join(root, site.output)
 // Build inputs are not published.
-const PRIVATE = new Set(["build.mjs", "site.json"])
+const PRIVATE = new Set(["build.mjs", "site.json", "tsconfig.json", "remote-control.ts"])
 const MERMAID = `<script type="module">
 import mermaid from "https://cdn.jsdelivr.net/npm/mermaid@11.4.1/dist/mermaid.esm.min.mjs"
 mermaid.initialize({ startOnLoad: true, theme: matchMedia("(prefers-color-scheme: dark)").matches ? "dark" : "default" })

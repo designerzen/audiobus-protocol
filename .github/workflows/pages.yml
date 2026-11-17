@@ -29,6 +29,8 @@ jobs:
       - run: npm run example
       - run: npm run example:midi2
       - run: npm run build:site
+      - name: Check committed remote demo matches its TypeScript source
+        run: git diff --exit-code -- api/remote-control.js
       - uses: actions/upload-pages-artifact@v3
         if: github.event_name != 'pull_request'
         with:
