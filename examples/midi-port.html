@@ -1,0 +1,92 @@
+<!doctype html>
+<html lang="en">
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>audioBus Protocol — connect over a MIDI port</title>
+<style>
+  body { font: 18px system-ui; max-width: 50rem; margin: 3rem auto; padding: 0 1rem; }
+  button, select, input { font: inherit; padding: .5rem; }
+  pre { white-space: pre-wrap; background: #8881; padding: 1rem; }
+  .row { display: flex; flex-wrap: wrap; gap: .5rem; align-items: center; margin: .75rem 0; }
+</style>
+<h1>Connect over a MIDI port</h1>
+<p>Two applications that cannot reach each other's windows, for example because both are cross-origin isolated for SharedArrayBuffer, can talk through a virtual MIDI port instead. Create a loopback port (loopMIDI on Windows, the IAC Driver on macOS, <code>snd-virmidi</code> on Linux), then open this page in two tabs, on any origins.</p>
+<p id="isolation"></p>
+<div class="row">
+  <button id="access">Allow MIDI</button>
+  <label>Port <select id="port" disabled></select></label>
+  <label>Room <input id="room" type="number" min="0" max="127" value="0" style="width: 5rem"></label>
+  <button id="listen" disabled>Listen</button>
+  <button id="connect" disabled>Connect to the other tab</button>
+</div>
+<div class="row">
+  <label>Tempo <input id="bpm" type="number" min="10" max="303" value="128" style="width: 6rem"></label>
+  <button id="set" disabled>Set the other tab's tempo</button>
+  <button id="note" disabled>Send a note</button>
+</div>
+<pre id="log" role="status"></pre>
+<script type="module">
+import { CommandRegistry, Peer, midiTransport, findMidiPort, isolationReport } from '../dist/index.js'
+
+const EVENT_CLICK = 'click', EVENT_PAGE_HIDE = 'pagehide'
+const $ = (selector) => document.querySelector(selector)
+const log = (value) => { $('#log').textContent += (typeof value === 'string' ? value : JSON.stringify(value)) + '\n' }
+
+const report = isolationReport()
+$('#isolation').textContent = report.crossOriginIsolated
+  ? 'This page is cross-origin isolated, so it can use SharedArrayBuffer, and MIDI still connects it.'
+  : 'This page is not cross-origin isolated. MIDI works the same either way.'
+
+// Each tab exposes the same tempo command, so either can control the other.
+const registry = new CommandRegistry()
+let bpm = 120
+registry.register({
+  id: 'transport.setTempo', title: 'Set tempo', description: 'Set this tab\'s tempo',
+  inputSchema: { type: 'object', properties: { bpm: { type: 'number', minimum: 10, maximum: 303 } }, required: ['bpm'], additionalProperties: false },
+  execute: (args) => { bpm = args.bpm; log(`This tab's tempo is now ${bpm} BPM`); return { bpm } }
+})
+
+let access, peer
+$('#access').addEventListener(EVENT_CLICK, async () => {
+  try {
+    // SysEx carries the protocol, so it needs the SysEx permission.
+    access = await navigator.requestMIDIAccess({ sysex: true })
+    const names = [...access.outputs.values()].map((port) => port.name).filter((name) => findMidiPort(access, name))
+    $('#port').replaceChildren(...names.map((name) => new Option(name, name)))
+    $('#port').disabled = $('#listen').disabled = !names.length
+    log(names.length ? 'Choose the loopback port, press Listen here, then Connect in the other tab.' : 'No port has both an input and an output with the same name. Create a loopback port and reload.')
+  } catch (error) { log(`MIDI is unavailable: ${error.message}`) }
+})
+
+function listen() {
+  peer?.close()
+  const port = findMidiPort(access, $('#port').value)
+  peer = new Peer(midiTransport(port.input, port.output, { room: Number($('#room').value) }), {
+    identity: { name: 'MIDI port example', version: '1' },
+    registry,
+    onMidi: (bytes) => log(`MIDI from the other tab: ${[...bytes].map((byte) => byte.toString(16)).join(' ')}`),
+    onClosed: () => log('The other tab closed its connection.')
+  })
+  $('#connect').disabled = false
+  $('#set').disabled = $('#note').disabled = false
+}
+$('#listen').addEventListener(EVENT_CLICK, () => { listen(); log('Listening.') })
+$('#connect').addEventListener(EVENT_CLICK, async () => {
+  if (!peer) listen()
+  try {
+    const identity = await peer.connect()
+    log(`Connected to ${identity.name}; commands: ${(await peer.discover()).map((command) => command.id).join(', ')}`)
+  } catch (error) { log(error.code === 'timeout' ? 'No answer. Press Listen in the other tab on the same port and room.' : error.message) }
+})
+$('#set').addEventListener(EVENT_CLICK, async () => {
+  try { log(await peer.call('transport.setTempo', { bpm: Number($('#bpm').value) })) } catch (error) { log(error.message) }
+})
+$('#note').addEventListener(EVENT_CLICK, () => {
+  try {
+    peer.sendMidi([0x90, 60, 100])
+    setTimeout(() => peer.sendMidi([0x80, 60, 0]), 300)
+  } catch (error) { log(error.message) }
+})
+window.addEventListener(EVENT_PAGE_HIDE, () => peer?.close())
+</script>
+</html>

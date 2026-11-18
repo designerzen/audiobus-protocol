@@ -1,11 +1,12 @@
 import { CommandRegistry, type PropertyDescriptor, type CapabilityBundle, type CommandDescriptor, type Json, type Params } from "./registry.js";
 import type { Transport } from "./transport.js";
+import { CONTROL_PREFIX, MAX_MESSAGE_LENGTH, decodeControl, decodeMidi, isInitializeRequest } from "./control.js";
 export * from "./registry.js";
 export * from "./transport.js";
+export * from "./transports.js";
 export * from "./ump.js";
+export { CONTROL_PREFIX, MAX_MESSAGE_LENGTH, decodeControl, decodeMidi, isInitializeRequest };
 export declare const PROTOCOL_VERSION = 1;
-export declare const CONTROL_PREFIX = "control,";
-export declare const MAX_MESSAGE_LENGTH = 262144;
 /** Requests one peer executes at once; further requests fail with `limit_exceeded`. */
 export declare const MAX_CONCURRENT_REQUESTS = 32;
 /** Failed initializations, including retried copies, before a peer stops accepting codes. */
@@ -16,13 +17,6 @@ export declare function generatePairingCode(length?: number): string;
 export declare function normalizePairingCode(code: string): string;
 /** Groups of four for display, for example `ABCD-EFGH`. */
 export declare function formatPairingCode(code: string): string;
-/** Splits a control envelope into its kind and decoded JSON body; undefined when malformed. */
-export declare function decodeControl(message: string): {
-    kind: string;
-    body: Record<string, unknown>;
-} | undefined;
-/** True for the first message a new connection sends: an `initialize` request. */
-export declare function isInitializeRequest(message: string): boolean;
 export interface Identity {
     name: string;
     version: string;
@@ -63,8 +57,6 @@ export interface SubscriptionState {
     /** State captured atomically with the subscription; later changes arrive as events. */
     state?: Json;
 }
-/** One full MIDI message; no running status, concatenated messages, or invalid data bytes. */
-export declare function decodeMidi(message: string): Uint8Array | undefined;
 export declare class Peer {
     private transport;
     private options;

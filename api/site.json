@@ -7,12 +7,14 @@
 		{ "href": "index.html", "label": "Overview" },
 		{ "href": "demos.html", "label": "Demos" },
 		{ "href": "docs/protocol.html", "label": "Wire protocol" },
-		{ "href": "docs/integration.html", "label": "Integration" }
+		{ "href": "docs/integration.html", "label": "Integration" },
+		{ "href": "docs/isolation.html", "label": "Isolated apps" }
 	],
 	"pages": [
 		{ "source": "README.md", "output": "index.html", "lede": true },
 		{ "source": "docs/protocol.md", "output": "docs/protocol.html" },
-		{ "source": "docs/integration.md", "output": "docs/integration.html" }
+		{ "source": "docs/integration.md", "output": "docs/integration.html" },
+		{ "source": "docs/isolation.md", "output": "docs/isolation.html" }
 	],
 	"demos": {
 		"output": "demos.html",
@@ -63,6 +65,12 @@
 						"description": "A receiver for Harmoneasy's audioBus Protocol Output: notes, UMP, tempo commands, panic and patches, with optional sound. Open it from the Output by entering this page's examples/receiver.html address.",
 						"href": "examples/receiver.html",
 						"source": "examples/receiver.html"
+					},
+					{
+						"title": "Connect over a MIDI port",
+						"description": "For cross-origin isolated apps that cannot reach each other's windows. Create a loopback MIDI port, open this page in two tabs on any origins, and set each other's tempo over SysEx.",
+						"href": "examples/midi-port.html",
+						"source": "examples/midi-port.html"
 					}
 				]
 			},

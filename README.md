@@ -4,7 +4,7 @@ Let web music applications **find each other's commands, call them, follow each 
 
 **[Documentation and live demos](https://designerzen.github.io/audiobus-protocol/)** · **[Remote control Harmoneasy](https://designerzen.github.io/harmoneasy/protocol-remote.html)** · [Wire protocol](docs/protocol.md) · [Integration guide](docs/integration.md)
 
-- No runtime dependencies, no DOM required. Works in any window, iframe, popup or custom transport.
+- No runtime dependencies, no DOM required. Works in any window, iframe or popup, and between cross-origin isolated apps over a MIDI port, WebRTC, a WebSocket or an extension.
 - Commands are described with JSON schemas, so a remote can build forms and a command palette can share the same handlers.
 - MIDI 1 bytes, negotiated MIDI 2 UMP, discoverable properties, retained state and pairing codes.
 
@@ -172,6 +172,21 @@ if (peer.supports('ump')) {
 
 The SDK never converts between UMP and MIDI 1. That is up to the application.
 
+### Cross-origin isolated apps (SharedArrayBuffer)
+
+Apps that send `Cross-Origin-Opener-Policy: same-origin` for `SharedArrayBuffer` cannot reach another origin's popup or opener, so `windowTransport` has nothing to post to. Iframes still work. For separate pages, swap the transport and keep everything else:
+
+```js
+import { Peer, midiTransport, findMidiPort } from 'audiobus-protocol'
+
+// Both apps open the same loopback port (loopMIDI, IAC Driver, snd-virmidi).
+const access = await navigator.requestMIDIAccess({ sysex: true })
+const { input, output } = findMidiPort(access, 'loopMIDI Port')
+const peer = new Peer(midiTransport(input, output), { identity, registry: commands })
+```
+
+A MIDI port authenticates no one, so use ports only trusted software opens. `socketTransport` wraps a WebSocket or WebRTC data channel, and `portTransport` a MessagePort from an extension. In Chromium, `Document-Isolation-Policy` keeps `SharedArrayBuffer` without cutting window references. [Cross-origin isolated applications](docs/isolation.md) compares every option, with headers and code.
+
 ### Pairing codes for windows you did not choose
 
 `windowTransport` proves which window sent a message, not that a person meant to connect. When the peer is `window.opener` or an embedding parent, show a code and require it:
@@ -267,6 +282,14 @@ The window demos need HTTP(S), not `file://`. Run `npm run build:site` and serve
 | `requestPatch()` / `setPatch(text)` | WebMidiLink Level 1 patches |
 | `close({ notify })` | Tell the other side (`bye`) and remove listeners |
 
+| Transports | |
+| --- | --- |
+| `windowTransport(window, origin)` | A popup, opener, iframe or parent, with exact origin checks |
+| `midiTransport(input, output, { room })` / `findMidiPort(access, name)` | Web MIDI SysEx over a loopback port, for isolated apps |
+| `socketTransport(socket)` | WebSocket or RTCDataChannel; queues until open |
+| `portTransport(port)` | MessagePort or BroadcastChannel |
+| `isolationReport()` / `windowReachable(window)` | Whether this page is isolated and which windows it can reach |
+
 | `CommandRegistry` | |
 | --- | --- |
 | `register(command)` → `unregister` | Command with `inputSchema`, optional `available()` and `execute(args)` |
@@ -304,7 +327,7 @@ Commit `dist/` with any source change (`npm run build`); CI fails if it is out o
 
 | Package | Adds |
 | --- | --- |
-| 0.3.0 (current `main`) | Per-Peer request tokens, `bye` on `close()`, `onClosed` and `onError`, request limits |
+| 0.3.0 (current `main`) | Per-Peer request tokens, `bye` on `close()`, `onClosed` and `onError`, request limits; MIDI, socket and port transports for cross-origin isolated apps |
 | 0.3 | Pairing codes, retained subscription state (`retain`, `subscribeState`) |
 | 0.2 | Negotiated UMP, properties, capability bundles |
 

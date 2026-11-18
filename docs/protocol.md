@@ -2,7 +2,31 @@
 
 ## Transport and framing
 
-Each transport message is a single string. The default browser transport uses `window.postMessage`; custom transports implement `send(string)` and `listen(callback) → unsubscribe`. Transport implementations must isolate one authorized peer and preserve message order. A `Peer` owns its listener and subscriptions, not the underlying window.
+Each transport message is a single string. The default browser transport uses `window.postMessage`; custom transports implement `send(string)` and `listen(callback) → unsubscribe`. Transport implementations must isolate one authorized peer and preserve message order. A `Peer` owns its listener and subscriptions, not the underlying window. The SDK also provides `portTransport` (MessagePort, BroadcastChannel), `socketTransport` (WebSocket, RTCDataChannel) and `midiTransport` (Web MIDI SysEx) for applications that cannot reach each other's windows, such as cross-origin isolated pages; see [cross-origin isolated applications](isolation.md).
+
+### MIDI SysEx framing
+
+`midiTransport` carries each protocol message, plain MIDI included, as one or more non-commercial SysEx messages, so a peer can recognise its own echoes on a loopback port and tell senders apart:
+
+```text
+F0 7D 61 42 <version> <room> <sender×4> <sequence×2> <index×3> <flags> <payload…> F7
+```
+
+| Field | Bytes | Meaning |
+| --- | --- | --- |
+| `7D` | 1 | Non-commercial manufacturer ID |
+| `61 42` | 2 | Signature, ASCII `aB` |
+| version | 1 | Framing version, `01` |
+| room | 1 | 0–127; peers ignore other rooms |
+| sender | 4 | Random 7-bit bytes chosen per transport; frames with the receiver's own sender are echoes |
+| sequence | 2 | Message number, 14 bits, most significant first, wrapping |
+| index | 3 | Frame number within the message, 21 bits, starting at 0 |
+| flags | 1 | Bit 0 set on the message's last frame |
+| payload | any | Part of the message's UTF-8 bytes, packed into 7-bit data bytes |
+
+Packing splits the UTF-8 bytes into groups of up to seven. Each group is sent as one byte holding the group's high bits (bit *n* is the high bit of byte *n*), followed by the group's bytes with their high bits cleared. The packed stream is cut into frames of at most 240 bytes by default. A receiver concatenates the payloads of frames with consecutive indexes from one sender and sequence, unpacks them on the last frame, and drops the message on any gap, on invalid UTF-8, or when it exceeds the message limit. It talks to one other sender, chosen by a completed handshake: the receiver accepted that sender's `initialize` request, or that sender accepted the receiver's. Until then, other senders' messages are ignored unless they are `initialize` requests or answers to the receiver's own, and their reassembly is limited to a few small messages. `bye` from the followed sender ends the session.
+
+`socketTransport` sends each protocol message as one socket message when it fits within `maxMessageSize` bytes, 65,536 by default. Longer messages are sent as `frag,<id>,<index>,<last>,<text>` fragments. Here `id` numbers the message, `index` counts from 0, `last` is `1` on the final fragment, and `text` is the next part of the message, never splitting a surrogate pair. The receiver joins consecutive fragments of one message and drops it on any gap or when it exceeds the message limit.
 
 Control messages are `control,<kind>,<payload>`, where kind is `request`, `response`, `event` or `bye` and payload is `encodeURIComponent(JSON.stringify(body))`. Decode exactly once. Encoded payloads contain no literal commas. Maximum total message length is 262,144 JavaScript UTF-16 code units; larger messages are rejected on send and ignored on receipt. Unknown prefixes, malformed frames, and malformed responses are ignored. Control framing is an audioBus extension, not part of WebMidiLink.
 
