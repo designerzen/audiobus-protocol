@@ -185,7 +185,7 @@ const { input, output } = findMidiPort(access, 'loopMIDI Port')
 const peer = new Peer(midiTransport(input, output), { identity, registry: commands })
 ```
 
-A MIDI port authenticates no one, so use ports only trusted software opens. `socketTransport` wraps a WebSocket or WebRTC data channel, and `portTransport` a MessagePort from an extension. In Chromium, `Document-Isolation-Policy` keeps `SharedArrayBuffer` without cutting window references. [Cross-origin isolated applications](docs/isolation.md) compares every option, with headers and code.
+Anything on a MIDI port can read and send to it, so pass a `secret` both apps know, as in [secure channels](#secure-channels-for-isolated-apps). `socketTransport` wraps a WebSocket or WebRTC data channel, and `portTransport` a MessagePort from an extension. In Chromium, `Document-Isolation-Policy` keeps `SharedArrayBuffer` without cutting window references. [Cross-origin isolated applications](docs/isolation.md) compares every option, with headers and code.
 
 ### Pairing codes for windows you did not choose
 
@@ -220,6 +220,67 @@ sequenceDiagram
     C->>I: initialize {pairingCode: "ABCD-EFGH"}
     I-->>C: authorized: commands, MIDI and patches now accepted
 ```
+
+## Secure channels for isolated apps
+
+A window knows which window and origin sent each message, so `windowTransport` can check both. A MIDI port, a socket relay or an extension port cannot: anything connected to the channel can send to it and read from it. Pass a secret that both applications know, and the transport encrypts and authenticates everything:
+
+```js
+import { Peer, midiTransport, findMidiPort, generatePairingCode, formatPairingCode } from 'audiobus-protocol'
+
+// One application shows a code; the person types it into the other.
+const secret = generatePairingCode(12)              // 60 random bits
+codeLabel.textContent = formatPairingCode(secret)   // e.g. ABCD-EFGH-JKLM
+
+const { input, output } = findMidiPort(await navigator.requestMIDIAccess({ sysex: true }), 'loopMIDI Port')
+const peer = new Peer(midiTransport(input, output, { secret }), { identity, registry: commands })
+```
+
+`secureTransport(transport, { secret })` does the same for a WebSocket, a WebRTC data channel or an extension's MessagePort.
+
+### The risks, and how the secret answers them
+
+| Risk on a shared channel | Without a secret | With a secret |
+| --- | --- | --- |
+| Other software on the port reads notes, commands and replies | Everything is readable | Encrypted with AES-GCM under keys that only the two applications hold |
+| Another sender injects commands or MIDI, or pretends to be either side | Possible on a MIDI port | Every message is authenticated; nothing is heard from a sender until it proves the secret |
+| Someone records traffic and sends it again | Accepted again | Each direction numbers its messages, and a number is only accepted once and in order; every session has new keys, so a replayed handshake cannot restart the numbering |
+| Another application takes over the session | Needs an accepted `initialize`, which a pairing code can guard | Only an application that proves the secret, and only when it starts or accepts a connection, such as after a reload |
+| A pairing code is copied off the channel | `initialize` carries it in the clear | The secret never crosses the channel; each side only proves it knows it |
+| Junk or oversized frames exhaust memory | Bounded either way: senders without a handshake get a few small reassembly slots | The same |
+| Large messages are lost or arrive out of order on a socket | Queued in order and split into fragments either way | The same |
+
+### How it works
+
+```mermaid
+sequenceDiagram
+    participant A as Application A
+    participant B as Application B
+    A->>B: hello (public key)
+    B->>A: hello (public key)
+    A->>B: nonce (random, new for this session)
+    B->>A: nonce (random, new for this session)
+    Note over A,B: each side combines the two keys (ECDH P-256), both nonces<br/>and the stretched secret (PBKDF2, then HKDF) into session keys
+    A->>B: confirm (proof of the session keys)
+    B->>A: confirm (proof of the session keys)
+    Note over A,B: a wrong secret gives different keys, so its proof fails and it is ignored
+    A->>B: data n (AES-GCM, numbered)
+    B->>A: data n (AES-GCM, numbered)
+```
+
+Both sides add a fresh random nonce to every session, so its keys are new even when a recorded handshake is sent again, and recordings of one session do not help with another. The `initialize`, commands, events and MIDI then run inside the encrypted channel exactly as over `postMessage`; nothing else in the application changes. The [wire format](docs/protocol.md#secure-channels) is specified for other implementations.
+
+### Choosing a secret, and the limits
+
+- **Use a long, random secret.** A program that is on the channel and starts a handshake receives a proof it can test guesses against without further contact. Stretching makes each guess slow, but a short code still falls. `generatePairingCode(12)` gives 60 random bits, beyond practical guessing; a passphrase of four or more random words is similar. An 8-character code gives 40 bits: fine to keep out mistakes and casual listeners, not a determined attacker.
+- **Case, spaces and dashes are ignored**, as with pairing codes, so `abcd efgh jklm` matches `ABCD-EFGH-JKLM`.
+- **The secret protects the channel, not the computer.** Software that can read the browser's memory or keystrokes can read the secret too. A loopback MIDI port is local, so its realistic risks are other web pages granted MIDI access, other music software, and network MIDI sessions bridged to the port. The secret covers all three.
+- **Plain MIDI accepted with `acceptPlainMidi` is not authenticated.** It comes from keyboards and other devices on the port, so treat it like any MIDI input.
+- **Metadata is visible, and disruption is possible.** Others on the port can see that two applications are talking, how much, and in which room, but not what they say. Anything that can write to the port can also disrupt a connection, for example by flooding it or garbling frames; it cannot read or forge messages. Reconnect to start a fresh handshake.
+- **The stretching salt is fixed**, so an attacker can precompute guesses once for every target. That is one more reason for a random secret rather than a word or a short code.
+- **Tests use simulated ports and channels.** Check that your MIDI driver passes SysEx frames of about 260 bytes, and lower `chunkSize` if it does not.
+
+[Cross-origin isolated applications](docs/isolation.md#secure-channels) covers each transport in detail.
 
 ## Control Harmoneasy
 
@@ -289,6 +350,7 @@ The window demos need HTTP(S), not `file://`. Run `npm run build:site` and serve
 | `socketTransport(socket)` | WebSocket or RTCDataChannel; queues until open |
 | `portTransport(port)` | MessagePort or BroadcastChannel |
 | `isolationReport()` / `windowReachable(window)` | Whether this page is isolated and which windows it can reach |
+| `midiTransport(input, output, { secret })` / `secureTransport(transport, { secret })` | Encrypt and authenticate a shared channel with a secret both sides know |
 
 | `CommandRegistry` | |
 | --- | --- |
@@ -303,6 +365,7 @@ Throw `new ProtocolError('invalid_params', message)` from `execute` to reject a 
 ## Security
 
 - `windowTransport(target, origin)` takes a specific window and an exact origin. It checks `event.source` and `event.origin` and never uses `*`.
+- MIDI ports, sockets and extension ports carry no origin. Give them a `secret`, which encrypts and authenticates every message; see [secure channels](#secure-channels-for-isolated-apps).
 - An origin tells you who is connected, not what they may do. Give each connection a registry that suits it.
 - Pairing codes are optional when the host wants explicit approval. audioBus accepts open connections by default; see [accepting unpaired senders](docs/protocol.md#accepting-unpaired-senders) for session handling.
 - Messages over 262,144 characters are rejected, a peer runs at most 32 requests at once, and replies are matched to a per-Peer token, so an earlier session cannot answer a new one.
@@ -327,7 +390,7 @@ Commit `dist/` with any source change (`npm run build`); CI fails if it is out o
 
 | Package | Adds |
 | --- | --- |
-| 0.3.0 (current `main`) | Per-Peer request tokens, `bye` on `close()`, `onClosed` and `onError`, request limits; MIDI, socket and port transports for cross-origin isolated apps |
+| 0.3.0 (current `main`) | Per-Peer request tokens, `bye` on `close()`, `onClosed` and `onError`, request limits; MIDI, socket and port transports for cross-origin isolated apps, encrypted with a shared secret |
 | 0.3 | Pairing codes, retained subscription state (`retain`, `subscribeState`) |
 | 0.2 | Negotiated UMP, properties, capability bundles |
 

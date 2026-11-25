@@ -2,6 +2,7 @@
 // applications. See docs/isolation.md.
 import type { Transport } from "./transport.js";
 import { CONTROL_PREFIX, MAX_MESSAGE_LENGTH, decodeControl, decodeMidi } from "./control.js";
+import { MAX_SECURE_LENGTH, PLAIN_SENDER, secureBus, type Bus } from "./secure.js";
 
 const EVENT_MESSAGE = "message";
 const EVENT_OPEN = "open";
@@ -150,7 +151,8 @@ export function socketTransport(socket: SocketLike, options: SocketTransportOpti
         partial.parts.push(text);
         partial.length += text.length;
         partial.next++;
-        if (partial.length > MAX_MESSAGE_LENGTH) {
+        // Encrypted messages are longer than the plain messages they carry.
+        if (partial.length > MAX_SECURE_LENGTH) {
           partial = undefined;
         } else if (last === "1") {
           const message = partial.parts.join("");
@@ -184,8 +186,6 @@ const FLAG_LAST = 1;
 /** Default packed payload bytes per SysEx frame, a size every MIDI driver accepts. */
 export const DEFAULT_SYSEX_CHUNK = 240;
 const MAX_SYSEX_CHUNK = 65536;
-// Worst case: every UTF-16 unit becomes 3 UTF-8 bytes, plus one byte in eight for packing.
-const MAX_PACKED_LENGTH = Math.ceil((MAX_MESSAGE_LENGTH * 3 * 8) / 7) + 8;
 // Senders this transport does not follow may only start a connection, so they get a small
 // budget and a few slots, and cannot grow memory by starting many messages.
 const CANDIDATE_PACKED_LENGTH = 16384;
@@ -255,6 +255,12 @@ export interface MidiTransportOptions {
    * own messages cannot echo back this way.
    */
   acceptPlainMidi?: boolean;
+  /**
+   * A secret both applications know, such as a pairing code or passphrase. Messages are then
+   * encrypted and authenticated, and only a sender that proves the secret is heard. Without it,
+   * anything that can use the port can read and impersonate either side.
+   */
+  secret?: string;
 }
 
 /**
@@ -262,51 +268,32 @@ export interface MidiTransportOptions {
  * cross-origin isolated pages. Open the same virtual or loopback port (loopMIDI, the macOS IAC
  * driver, ALSA virmidi) in both applications, with `requestMIDIAccess({ sysex: true })`.
  *
- * The transport ignores its own echoes and talks to one other sender at a time. It starts
- * following a sender only after a completed handshake: this peer accepted that sender's
- * `initialize` request, or that sender accepted this peer's. A port is a shared bus with no
- * sender authentication, so only use ports that trusted software can write to.
+ * The transport ignores its own echoes and talks to one other sender at a time. With a `secret`,
+ * it follows only a sender that proved the secret, and encrypts everything. Without one, it
+ * follows a sender after a completed handshake: this peer accepted that sender's `initialize`
+ * request, or that sender accepted this peer's. A port has no sender authentication of its own,
+ * so use a secret unless only trusted software can use the port.
  */
 export function midiTransport(
   input: MidiInputLike,
   output: MidiOutputLike,
   options: MidiTransportOptions = {},
 ): Transport {
-  const room = options.room ?? 0;
-  const chunkSize = options.chunkSize ?? DEFAULT_SYSEX_CHUNK;
-  if (!Number.isInteger(room) || room < 0 || room > 127)
-    throw new Error("A MIDI room is an integer from 0 to 127");
-  if (!Number.isInteger(chunkSize) || chunkSize < 8 || chunkSize > MAX_SYSEX_CHUNK)
-    throw new Error(`chunkSize is an integer from 8 to ${MAX_SYSEX_CHUNK}`);
-  const sender = Array.from(crypto.getRandomValues(new Uint8Array(4)), (byte) => byte & 0x7f);
-  const self = sender.join(".");
-  const encoder = new TextEncoder();
-  const decoder = new TextDecoder("utf-8", { fatal: true });
-  let sequence = 0;
+  return options.secret === undefined
+    ? handshakeGate(midiBus(input, output, options, MAX_MESSAGE_LENGTH))
+    : secureBus(midiBus(input, output, options, MAX_SECURE_LENGTH), options.secret);
+}
+
+/** Follows the first sender whose `initialize` handshake succeeds, in either direction. */
+function handshakeGate(bus: Bus): Transport {
   // The sender this transport talks to, and a sender whose initialize request awaits our answer.
   let peer: string | undefined;
   let candidate: { from: string; id: string } | undefined;
   const awaited: string[] = [];
-  const forgetOthers = new Set<() => void>();
-
-  const follow = (from: string) => {
+  const follow = (from: string | undefined) => {
     peer = from;
     candidate = undefined;
-    forgetOthers.forEach((forget) => forget());
-  };
-  const frame = (message: string) => {
-    const payload = packSysex(encoder.encode(message));
-    const id = bits7(sequence, 2);
-    sequence = (sequence + 1) & 0x3fff;
-    const chunks = Math.max(1, Math.ceil(payload.length / chunkSize));
-    for (let index = 0; index < chunks; index++) {
-      const part = payload.slice(index * chunkSize, (index + 1) * chunkSize);
-      const bytes = new Uint8Array(HEADER_LENGTH + part.length + 1);
-      bytes.set([SYSEX_START, SYSEX_MANUFACTURER, ...SIGNATURE, FRAME_VERSION, room, ...sender, ...id, ...bits7(index, 3), index === chunks - 1 ? FLAG_LAST : 0]);
-      bytes.set(part, HEADER_LENGTH);
-      bytes[bytes.length - 1] = SYSEX_END;
-      output.send(bytes);
-    }
+    bus.follow(from);
   };
   return {
     send(message) {
@@ -331,13 +318,79 @@ export function midiTransport(
         if (Object.hasOwn(control.body, "result")) follow(candidate.from);
         else candidate = undefined;
       }
-      frame(message);
+      bus.send(message);
+    },
+    listen(receive) {
+      return bus.listen((message, from) => {
+        if (from !== PLAIN_SENDER && from !== peer) {
+          const control = decodeControl(message);
+          const id = control?.body.id;
+          if (typeof id !== "string") return;
+          if (control!.kind === "request" && control!.body.method === "initialize") {
+            // Deliver it; send() follows this sender once the reply accepts it.
+            candidate = { from, id };
+          } else if (control!.kind === "response" && awaited.includes(id)) {
+            // An answer to this peer's own initialize request.
+            if (Object.hasOwn(control!.body, "result")) follow(from);
+          } else {
+            return;
+          }
+        }
+        receive(message);
+        if (from === peer && message.startsWith(BYE_PREFIX)) follow(undefined);
+      });
+    },
+  };
+}
+
+/** SysEx framing over a MIDI port: every message, with the sender that framed it. */
+function midiBus(
+  input: MidiInputLike,
+  output: MidiOutputLike,
+  options: MidiTransportOptions,
+  limit: number,
+): Bus {
+  const room = options.room ?? 0;
+  const chunkSize = options.chunkSize ?? DEFAULT_SYSEX_CHUNK;
+  if (!Number.isInteger(room) || room < 0 || room > 127)
+    throw new Error("A MIDI room is an integer from 0 to 127");
+  if (!Number.isInteger(chunkSize) || chunkSize < 8 || chunkSize > MAX_SYSEX_CHUNK)
+    throw new Error(`chunkSize is an integer from 8 to ${MAX_SYSEX_CHUNK}`);
+  // Worst case: every UTF-16 unit becomes 3 UTF-8 bytes, plus one byte in eight for packing.
+  const packedLimit = Math.ceil((limit * 3 * 8) / 7) + 8;
+  const sender = Array.from(crypto.getRandomValues(new Uint8Array(4)), (byte) => byte & 0x7f);
+  const self = sender.join(".");
+  const encoder = new TextEncoder();
+  const decoder = new TextDecoder("utf-8", { fatal: true });
+  let sequence = 0;
+  let followed: string | undefined;
+  const forgetOthers = new Set<() => void>();
+
+  return {
+    follow(from) {
+      followed = from;
+      forgetOthers.forEach((forget) => forget());
+    },
+    send(message) {
+      if (message.length > limit) throw new Error("Message exceeds limit");
+      const payload = packSysex(encoder.encode(message));
+      const id = bits7(sequence, 2);
+      sequence = (sequence + 1) & 0x3fff;
+      const chunks = Math.max(1, Math.ceil(payload.length / chunkSize));
+      for (let index = 0; index < chunks; index++) {
+        const part = payload.slice(index * chunkSize, (index + 1) * chunkSize);
+        const bytes = new Uint8Array(HEADER_LENGTH + part.length + 1);
+        bytes.set([SYSEX_START, SYSEX_MANUFACTURER, ...SIGNATURE, FRAME_VERSION, room, ...sender, ...id, ...bits7(index, 3), index === chunks - 1 ? FLAG_LAST : 0]);
+        bytes.set(part, HEADER_LENGTH);
+        bytes[bytes.length - 1] = SYSEX_END;
+        output.send(bytes);
+      }
     },
     listen(receive) {
       type Assembly = { sequence: number; next: number; parts: Uint8Array[]; length: number };
       const partial = new Map<string, Assembly>();
       const forget = () => {
-        for (const key of partial.keys()) if (key !== peer) partial.delete(key);
+        for (const key of partial.keys()) if (key !== followed) partial.delete(key);
       };
       forgetOthers.add(forget);
       const deliver = (from: string, assembly: Assembly) => {
@@ -355,23 +408,7 @@ export function midiTransport(
         } catch {
           return;
         }
-        if (message.length > MAX_MESSAGE_LENGTH) return;
-        if (from !== peer) {
-          const control = decodeControl(message);
-          const id = control?.body.id;
-          if (typeof id !== "string") return;
-          if (control!.kind === "request" && control!.body.method === "initialize") {
-            // Deliver it; send() follows this sender once the reply accepts it.
-            candidate = { from, id };
-          } else if (control!.kind === "response" && awaited.includes(id)) {
-            // An answer to this peer's own initialize request.
-            if (Object.hasOwn(control!.body, "result")) follow(from);
-          } else {
-            return;
-          }
-        }
-        receive(message);
-        if (from === peer && message.startsWith(BYE_PREFIX)) peer = undefined;
+        if (message.length <= limit) receive(message, from);
       };
       const listener = (event: { data: Uint8Array | null }) => {
         const data = event.data;
@@ -384,7 +421,7 @@ export function midiTransport(
         if (!ours) {
           if (options.acceptPlainMidi && data[0]! >= 0x80) {
             const message = `midi,${Array.from(data, (byte) => byte.toString(16)).join(",")}`;
-            if (decodeMidi(message)) receive(message);
+            if (decodeMidi(message)) receive(message, PLAIN_SENDER);
           }
           return;
         }
@@ -401,12 +438,12 @@ export function midiTransport(
         const index = read7(data, 12, 3);
         const last = (data[15]! & FLAG_LAST) !== 0;
         const size = data.length - HEADER_LENGTH - 1;
-        const budget = from === peer ? MAX_PACKED_LENGTH : CANDIDATE_PACKED_LENGTH;
+        const budget = from === followed ? packedLimit : CANDIDATE_PACKED_LENGTH;
         let assembly = partial.get(from);
         if (index === 0) {
           partial.delete(from);
-          if (from !== peer) {
-            const others = [...partial.keys()].filter((key) => key !== peer);
+          if (from !== followed) {
+            const others = [...partial.keys()].filter((key) => key !== followed);
             if (others.length >= MAX_CANDIDATES) partial.delete(others[0]!);
           }
           assembly = { sequence: id, next: 0, parts: [], length: 0 };

@@ -16,6 +16,8 @@
   <button id="access">Allow MIDI</button>
   <label>Port <select id="port" disabled></select></label>
   <label>Room <input id="room" type="number" min="0" max="127" value="0" style="width: 5rem"></label>
+  <label>Secret <input id="secret" autocomplete="off" spellcheck="false" style="width: 12rem"></label>
+  <button id="generate">New secret</button>
   <button id="listen" disabled>Listen</button>
   <button id="connect" disabled>Connect to the other tab</button>
 </div>
@@ -26,7 +28,7 @@
 </div>
 <pre id="log" role="status"></pre>
 <script type="module">
-import { CommandRegistry, Peer, midiTransport, findMidiPort, isolationReport } from '../dist/index.js'
+import { CommandRegistry, Peer, midiTransport, findMidiPort, isolationReport, generatePairingCode, formatPairingCode } from '../dist/index.js'
 
 const EVENT_CLICK = 'click', EVENT_PAGE_HIDE = 'pagehide'
 const $ = (selector) => document.querySelector(selector)
@@ -61,7 +63,9 @@ $('#access').addEventListener(EVENT_CLICK, async () => {
 function listen() {
   peer?.close()
   const port = findMidiPort(access, $('#port').value)
-  peer = new Peer(midiTransport(port.input, port.output, { room: Number($('#room').value) }), {
+  // With a secret, everything on the port is encrypted and only the other tab is heard.
+  const secret = $('#secret').value.trim() || undefined
+  peer = new Peer(midiTransport(port.input, port.output, { room: Number($('#room').value), secret }), {
     identity: { name: 'MIDI port example', version: '1' },
     registry,
     onMidi: (bytes) => log(`MIDI from the other tab: ${[...bytes].map((byte) => byte.toString(16)).join(' ')}`),
@@ -70,13 +74,14 @@ function listen() {
   $('#connect').disabled = false
   $('#set').disabled = $('#note').disabled = false
 }
-$('#listen').addEventListener(EVENT_CLICK, () => { listen(); log('Listening.') })
+$('#generate').addEventListener(EVENT_CLICK, () => { $('#secret').value = formatPairingCode(generatePairingCode(12)); log('Type this secret into the other tab too.') })
+$('#listen').addEventListener(EVENT_CLICK, () => { listen(); log($('#secret').value.trim() ? 'Listening, encrypted with the secret.' : 'Listening without a secret: anything on the port can read and send.') })
 $('#connect').addEventListener(EVENT_CLICK, async () => {
   if (!peer) listen()
   try {
     const identity = await peer.connect()
     log(`Connected to ${identity.name}; commands: ${(await peer.discover()).map((command) => command.id).join(', ')}`)
-  } catch (error) { log(error.code === 'timeout' ? 'No answer. Press Listen in the other tab on the same port and room.' : error.message) }
+  } catch (error) { log(error.code === 'timeout' ? 'No answer. Press Listen in the other tab on the same port, room and secret.' : error.message) }
 })
 $('#set').addEventListener(EVENT_CLICK, async () => {
   try { log(await peer.call('transport.setTempo', { bpm: Number($('#bpm').value) })) } catch (error) { log(error.message) }

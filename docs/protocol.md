@@ -26,6 +26,25 @@ F0 7D 61 42 <version> <room> <sender×4> <sequence×2> <index×3> <flags> <paylo
 
 Packing splits the UTF-8 bytes into groups of up to seven. Each group is sent as one byte holding the group's high bits (bit *n* is the high bit of byte *n*), followed by the group's bytes with their high bits cleared. The packed stream is cut into frames of at most 240 bytes by default. A receiver concatenates the payloads of frames with consecutive indexes from one sender and sequence, unpacks them on the last frame, and drops the message on any gap, on invalid UTF-8, or when it exceeds the message limit. It talks to one other sender, chosen by a completed handshake: the receiver accepted that sender's `initialize` request, or that sender accepted the receiver's. Until then, other senders' messages are ignored unless they are `initialize` requests or answers to the receiver's own, and their reassembly is limited to a few small messages. `bye` from the followed sender ends the session.
 
+### Secure channels
+
+`midiTransport` with a `secret`, and `secureTransport`, carry every protocol message inside an encrypted channel. Its messages are text, sent as one message of the underlying transport each:
+
+| Message | Meaning |
+| --- | --- |
+| `secure,hello,1,<key>` | The sender's public key: an uncompressed P-256 point, base64url without padding. Sent when listening starts, and again in reply to a hello with a key not seen before from that sender |
+| `secure,nonce,<recipient key>,<nonce>` | 16 random bytes, base64url, new for each session. Sent after the hello that starts a session. The first nonce from a sender counts; later ones are ignored |
+| `secure,confirm,<recipient key>,<proof>` | HMAC-SHA-256 under the confirmation key of the text `<sender key>,<recipient key>`, base64url |
+| `secure,data,<n>,<sealed>` | A protocol message, UTF-8, sealed with AES-256-GCM under the sender's direction key. The nonce is `n` as a 96-bit big-endian integer. `n` starts at 1 and rises by one per message |
+
+Keys come from the secret and a key agreement:
+
+1. The secret is normalised to Unicode NFKC and upper case, with whitespace, `.`, `_` and `-` removed, then stretched with PBKDF2-SHA-256, 210,000 iterations, salt `audiobus-protocol secure 1`, to 32 bytes.
+2. ECDH between the two P-256 keys gives a 32-byte shared value.
+3. HKDF-SHA-256 with that value as input, the stretched secret as salt, and info `audiobus-protocol secure 1,<lower key>,<its nonce>,<higher key>,<its nonce>` (the two keys in string order, each followed by the nonce its owner sent) gives 96 bytes: the direction key from the lower key's owner, the direction key from the higher key's owner, and the confirmation key.
+
+A receiver accepts `data` only from a sender whose `confirm` it verified, and only with a higher `n` than the last it opened from that sender. It talks to one sender at a time: the first to confirm, then any other confirmed sender whose decrypted message is an `initialize` request, or an accepted answer to the receiver's own `initialize`. A receiver sends `initialize` requests to every confirmed sender, and holds other messages until one has confirmed. Messages that are not part of the channel are ignored, except plain MIDI accepted with `acceptPlainMidi`. Over MIDI, these messages use the SysEx framing above, with a message limit of 1,048,832 characters. A `confirm` that fails verification is ignored, so a forged one cannot cancel the real one.
+
 `socketTransport` sends each protocol message as one socket message when it fits within `maxMessageSize` bytes, 65,536 by default. Longer messages are sent as `frag,<id>,<index>,<last>,<text>` fragments. Here `id` numbers the message, `index` counts from 0, `last` is `1` on the final fragment, and `text` is the next part of the message, never splitting a surrogate pair. The receiver joins consecutive fragments of one message and drops it on any gap or when it exceeds the message limit.
 
 Control messages are `control,<kind>,<payload>`, where kind is `request`, `response`, `event` or `bye` and payload is `encodeURIComponent(JSON.stringify(body))`. Decode exactly once. Encoded payloads contain no literal commas. Maximum total message length is 262,144 JavaScript UTF-16 code units; larger messages are rejected on send and ignored on receipt. Unknown prefixes, malformed frames, and malformed responses are ignored. Control framing is an audioBus extension, not part of WebMidiLink.

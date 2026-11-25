@@ -68,7 +68,7 @@
 					},
 					{
 						"title": "Connect over a MIDI port",
-						"description": "For cross-origin isolated apps that cannot reach each other's windows. Create a loopback MIDI port, open this page in two tabs on any origins, and set each other's tempo over SysEx.",
+						"description": "For cross-origin isolated apps that cannot reach each other's windows. Create a loopback MIDI port, open this page in two tabs on any origins, optionally share a secret to encrypt the port, and set each other's tempo over SysEx.",
 						"href": "examples/midi-port.html",
 						"source": "examples/midi-port.html"
 					}

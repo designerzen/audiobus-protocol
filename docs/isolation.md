@@ -90,7 +90,8 @@ import { Peer, midiTransport, findMidiPort } from 'audiobus-protocol'
 
 const access = await navigator.requestMIDIAccess({ sysex: true })
 const port = findMidiPort(access, 'loopMIDI Port') // the input and output share the port's name
-const peer = new Peer(midiTransport(port.input, port.output, { room: 0 }), {
+const secret = codeInput.value // the same in both applications; see Secure channels below
+const peer = new Peer(midiTransport(port.input, port.output, { room: 0, secret }), {
   identity: { name: 'My application', version: '1' },
   registry: commands
 })
@@ -101,7 +102,7 @@ Every protocol message, MIDI included, travels as non-commercial SysEx, in the [
 
 - The transport drops its own messages when the loopback port echoes them back.
 - It talks to one other sender at a time, and only after a completed handshake. Either this side accepted that sender's `initialize` request, or that sender accepted this side's. Other senders can only offer a new `initialize`, so a reloaded application reconnects by itself. With a [pairing code](protocol.md#pairing-codes-sdk-03), an offer with a wrong code is refused and the current session continues.
-- **A port is a shared bus with no sender authentication.** Any software that can write to the port can read the traffic and impersonate either side, pairing code or not. Use ports that only trusted software opens, and give the connection a registry that suits that trust.
+- **A port is a shared bus with no sender authentication of its own.** Any software that can use the port can read the traffic and impersonate either side. Pass a [`secret`](#secure-channels) both applications know, and every message is encrypted and authenticated.
 - `room` (0–127) lets several pairs of applications share one port; peers only hear their own room.
 - Plain MIDI on the port, such as notes or clock from a keyboard routed into it, is ignored unless you pass `acceptPlainMidi: true`. It is then delivered as WebMidiLink `midi,…` messages. The transport never sends plain MIDI, so this cannot echo.
 - Senders that have not completed a handshake get only a few small reassembly slots, so junk traffic cannot grow memory.
@@ -190,6 +191,26 @@ await peer.connect()
 
 Anything on the machine can open a local socket, so authenticate the connection with a [pairing code](protocol.md#pairing-codes-sdk-03) or a token, and check the `Origin` header on the server. Messages above 65,536 bytes are split into `frag,…` fragments unless you pass `maxMessageSize: Infinity`. A server that relays messages unchanged needs no changes for this.
 
+## Secure channels
+
+Pass a secret both applications know, and the channel is encrypted and authenticated:
+
+```js
+import { midiTransport, secureTransport, socketTransport, generatePairingCode } from 'audiobus-protocol'
+
+const secret = generatePairingCode(12) // shown in one application, typed into the other
+
+midiTransport(input, output, { secret })
+secureTransport(socketTransport(channel), { secret })   // WebSocket or WebRTC data channel
+secureTransport(portTransport(port), { secret })        // extension MessagePort
+```
+
+Each side starts with a fresh key pair and sends its public key, then a random nonce for this session. Both combine the two keys, both nonces and the secret into session keys, and prove they hold them before anything else is accepted. A sender with the wrong secret ends up with different keys, so its proof fails and it is ignored. Every message is then sealed with AES-GCM and numbered, so it cannot be read, altered, forged or replayed. The secret itself never crosses the channel. Both sides must use the same transport options; one side with a secret and one without do not connect.
+
+On a shared MIDI port, only an application that proves the secret can take over a session, and only when it starts a connection or accepts one, as a reloaded application does. Several pairs can still share a port with separate rooms or separate secrets.
+
+A program on the channel that starts a handshake gets a proof it can test guesses at the secret against, offline. PBKDF2 slows each guess, but short secrets still fall, so use `generatePairingCode(12)` (60 random bits) or a passphrase of four or more random words. An 8-character code keeps out mistakes and casual listeners, not a determined attacker. The secret protects the channel, not the computer: software that can read the browser's memory or keystrokes can read the secret too. Others on the channel can still see that two applications are talking and how much, and anything that can write to it can disrupt the connection, though not read or forge it. The [README](../README.md#secure-channels-for-isolated-apps) summarises each risk, and the [wire format](protocol.md#secure-channels) is specified for other implementations.
+
 ## Security
 
-Origins are not checked on the MIDI, data channel, extension or socket transports, because those channels carry no origin. The channel's owner decides who is on the other end: whoever can use the MIDI port, whoever completed the WebRTC handshake, the extension, or the socket server. A MIDI port authenticates no one, so a pairing code there guards against mistakes, not against hostile software on the same port. Give each connection a registry that suits it, and require a pairing code where anyone else could reach the channel.
+Origins are not checked on the MIDI, data channel, extension or socket transports, because those channels carry no origin. The channel's owner decides who is on the other end: whoever can use the MIDI port, whoever completed the WebRTC handshake, the extension, or the socket server. Give these channels a [secret](#secure-channels): a Peer pairing code alone travels in the clear inside `initialize`, so it guards against mistakes, not against software listening on the same channel. Give each connection a registry that suits it.

@@ -73,16 +73,23 @@ export interface MidiTransportOptions {
      * own messages cannot echo back this way.
      */
     acceptPlainMidi?: boolean;
+    /**
+     * A secret both applications know, such as a pairing code or passphrase. Messages are then
+     * encrypted and authenticated, and only a sender that proves the secret is heard. Without it,
+     * anything that can use the port can read and impersonate either side.
+     */
+    secret?: string;
 }
 /**
  * A transport over Web MIDI, for applications that cannot reach each other's windows, such as two
  * cross-origin isolated pages. Open the same virtual or loopback port (loopMIDI, the macOS IAC
  * driver, ALSA virmidi) in both applications, with `requestMIDIAccess({ sysex: true })`.
  *
- * The transport ignores its own echoes and talks to one other sender at a time. It starts
- * following a sender only after a completed handshake: this peer accepted that sender's
- * `initialize` request, or that sender accepted this peer's. A port is a shared bus with no
- * sender authentication, so only use ports that trusted software can write to.
+ * The transport ignores its own echoes and talks to one other sender at a time. With a `secret`,
+ * it follows only a sender that proved the secret, and encrypts everything. Without one, it
+ * follows a sender after a completed handshake: this peer accepted that sender's `initialize`
+ * request, or that sender accepted this peer's. A port has no sender authentication of its own,
+ * so use a secret unless only trusted software can use the port.
  */
 export declare function midiTransport(input: MidiInputLike, output: MidiOutputLike, options?: MidiTransportOptions): Transport;
 /** Minimal shape of the MIDIAccess returned by navigator.requestMIDIAccess. */

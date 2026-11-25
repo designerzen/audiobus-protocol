@@ -24,6 +24,7 @@ import {
 export * from "./registry.js";
 export * from "./transport.js";
 export * from "./transports.js";
+export { secureTransport, normalizeSecret, SECRET_ITERATIONS, MAX_SECURE_LENGTH } from "./secure.js";
 export * from "./ump.js";
 export { CONTROL_PREFIX, MAX_MESSAGE_LENGTH, decodeControl, decodeMidi, isInitializeRequest };
 
